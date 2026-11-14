@@ -1,0 +1,20 @@
+# Mantém UMA sessão Kaggle em andamento: consulta o coordenador (leve, segundos) e, só se não houver cérebro ativo
+# e a fila precisar, dispara `kaggle kernels push`. NÃO processa vídeo aqui (política de uso do Actions).
+name: kaggle-trigger
+on:
+  schedule: [{cron: "*/30 * * * *"}]
+  workflow_dispatch: {}
+concurrency: {group: kaggle-trigger, cancel-in-progress: false}
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      XH_COORD_URL: ${{ secrets.XH_COORD_URL }}
+      XH_ADMIN_TOKEN: ${{ secrets.XH_ADMIN_TOKEN }}
+      KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+      KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install kaggle requests
+      - run: python scripts/kaggle_trigger.py

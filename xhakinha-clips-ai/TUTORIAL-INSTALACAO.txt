@@ -1,0 +1,533 @@
+==============================================================================
+ XHAKINHA CLIPS AI — TUTORIAL DE INSTALAÇÃO E USO (100% PELO CELULAR ANDROID)
+==============================================================================
+Feito para quem NÃO tem computador. Você só precisa de: um celular Android,
+o navegador Chrome, um e-mail (Gmail serve) e um cartão para verificação de
+identidade na Oracle (ela NÃO cobra no plano grátis, mas pede o cartão — veja
+a seção 8 e as observações de custo).
+
+COMO LER ESTE TUTORIAL
+- Texto entre [colchetes] = botão/menu que você toca.
+- Linhas que começam com "$ " = comando para copiar e colar no terminal.
+  (Não copie o "$ ", só o que vem depois.)
+- "ESPERADO:" = o que deve aparecer se deu certo.
+- "SE DER ERRADO:" = como reconhecer e consertar.
+- Faça UMA etapa por vez. Se travar, vá direto à seção 24 (erros comuns).
+
+VISÃO GERAL (o que vamos fazer)
+  1) Colocar o projeto num repositório PRIVADO no GitHub.
+  2) Abrir o GitHub Codespaces (um "computador" dentro do navegador) só para
+     preparar e enviar os arquivos.
+  3) Criar um servidor GRATUITO na Oracle Cloud (fica ligado 24h).
+  4) Instalar o Docker no servidor e subir o sistema.
+  5) Colocar HTTPS (cadeado) de graça com um endereço DuckDNS.
+  6) Abrir o painel no celular e instalar como aplicativo (PWA).
+  7) Conectar suas fontes (YouTube/Twitch), TikTok e Instagram.
+
+AVISOS HONESTOS ANTES DE COMEÇAR (leia!)
+  * O Codespaces grátis dá 120 horas de "núcleo" por mês (GitHub Free) = só
+    ~60 horas de uma máquina de 2 núcleos. Ele NÃO serve para rodar o sistema
+    24h. Usamos o Codespaces só como "terminal" de apoio. Quem roda 24h é a
+    Oracle Cloud.
+  * Plano grátis da Oracle (conferido na documentação oficial): máquinas
+    Ampere A1 com o equivalente a 2 OCPU e 12 GB de memória; 200 GB de disco;
+    10 TB/mês de saída de dados. Máquinas "ociosas" (uso baixo de CPU, rede e
+    memória por 7 dias seguidos) PODEM ser recolhidas pela Oracle. Às vezes a
+    Oracle fica "sem capacidade" para criar a máquina grátis — aí é só tentar
+    de novo em outro horário.
+  * Servidor de 2 OCPU é modesto: vídeos longos demoram para processar. O
+    sistema trabalha em fila e nunca descarta tarefas; ele só leva mais tempo.
+  * TikTok: um app NÃO auditado só consegue postar em modo PRIVADO ("Só eu").
+    Para postar público, o app precisa passar pela auditoria do TikTok. O
+    sistema respeita isso e não tenta contornar.
+  * Instagram: a API só publica em contas Profissionais (Comercial/Criador).
+  * Só use conteúdo SEU ou com autorização. O painel pede essa declaração.
+  * O sistema NUNCA faz upload de legendas/títulos no vídeo. Só o @ discreto.
+
+------------------------------------------------------------------------------
+ETAPA 1 — BAIXAR O ZIP
+------------------------------------------------------------------------------
+1. Toque no arquivo XHAKINHA-CLIPS-AI.zip que recebeu e toque em [Baixar].
+2. O Android salva em [Arquivos] > [Downloads].
+ESPERADO: aparece o arquivo "XHAKINHA-CLIPS-AI.zip" (cerca de 1 MB ou menos).
+SE DER ERRADO: se aparecer "Download falhou", toque de novo em baixar com o
+Wi-Fi ligado.
+
+------------------------------------------------------------------------------
+ETAPA 2 — EXTRAIR OS ARQUIVOS (opcional, só para conferir)
+------------------------------------------------------------------------------
+Você NÃO precisa extrair para instalar (vamos enviar o ZIP inteiro ao GitHub e
+extrair lá dentro). Se quiser conferir o conteúdo:
+1. Abra [Arquivos] (ou "Files by Google") > [Downloads].
+2. Toque no ZIP > [Extrair]. Cria a pasta "XHAKINHA-CLIPS-AI".
+ESPERADO: dentro há README.md, Dockerfile, docker-compose.yml, xhakinha/ ...
+
+------------------------------------------------------------------------------
+ETAPA 3 — COLOCAR O PROJETO NO GITHUB
+------------------------------------------------------------------------------
+3.1 Criar conta (se ainda não tem)
+  1. No Chrome abra: github.com  > [Sign up]. Crie a conta com seu e-mail.
+  2. Confirme o e-mail (chega um código).
+3.2 Criar o repositório PRIVADO
+  1. Toque no [+] (canto superior) > [New repository].
+  2. Repository name: xhakinha-clips-ai
+  3. Marque [Private]  (MUITO IMPORTANTE: privado).
+  4. Marque [Add a README file].
+  5. Toque [Create repository].
+3.3 Enviar o ZIP
+  1. Dentro do repositório: [Add file] > [Upload files].
+  2. Toque em "choose your files", escolha XHAKINHA-CLIPS-AI.zip
+     (em Downloads) e aguarde terminar.
+  3. Role até o fim > [Commit changes].
+ESPERADO: o arquivo XHAKINHA-CLIPS-AI.zip aparece na lista do repositório.
+SE DER ERRADO: se o Chrome não mostrar "Upload files", toque nos 3 pontinhos
+do Chrome > marque [Site para computador]. Recarregue a página.
+
+------------------------------------------------------------------------------
+ETAPA 4 — ABRIR O CODESPACES PELO ANDROID
+------------------------------------------------------------------------------
+1. No repositório, toque no botão verde [<> Code] > aba [Codespaces] >
+   [Create codespace on main].
+   (Se não achar, use o Chrome em [Site para computador].)
+2. Espere 1–2 minutos. Abre um editor (VS Code) no navegador.
+3. Para abrir o TERMINAL: toque no menu de 3 linhas (☰) no canto superior
+   esquerdo > [Terminal] > [New Terminal].
+DICA ANDROID: gire o celular para o modo paisagem e use o zoom do Chrome
+(3 pontinhos > Zoom) para ver melhor. O teclado "Gboard" tem a tecla Ctrl em
+[?123] > [=\<] em alguns modelos; para COLAR no terminal, toque e segure no
+campo do terminal e escolha [Colar].
+ESPERADO: aparece uma linha como "@seu-usuario ➜ /workspaces/xhakinha-clips-ai (main) $".
+SE DER ERRADO: se disser "limite de uso atingido", você consumiu as 120
+horas do mês; aguarde o mês virar ou use outro dia. (Por isso: ao terminar,
+sempre PARE o Codespace — veja a Etapa 4.1.)
+
+4.1 Como PARAR o Codespace (para não gastar suas horas grátis)
+  Em github.com/codespaces > toque nos 3 pontinhos do seu codespace >
+  [Stop codespace]. Ele também para sozinho depois de um tempo parado.
+
+------------------------------------------------------------------------------
+ETAPA 5 — CONFIGURAR O PROJETO (extrair no Codespace)
+------------------------------------------------------------------------------
+No terminal do Codespace, rode UM comando por vez:
+
+$ unzip -o XHAKINHA-CLIPS-AI.zip
+  O que faz: extrai o projeto aqui.   ESPERADO: lista de arquivos "inflating".
+
+$ cd xhakinha-clips-ai
+  O que faz: entra na pasta do projeto criada pelo ZIP. (A partir daqui TODOS os
+  comandos são dados dentro desta pasta.)
+
+$ ls
+  ESPERADO: aparecem Dockerfile, docker-compose.yml, xhakinha, scripts, tests...
+
+$ python3 scripts/setup.py
+  O que faz: cria o arquivo .env com um SEGREDO FORTE gerado na hora.
+  ESPERADO: "OK: .env criado com SECRET_KEY forte (permissão 600)..."
+  SE DER ERRADO: "python3: command not found" -> use: $ python scripts/setup.py
+
+O arquivo .env NUNCA vai para o GitHub (está protegido pelo .gitignore).
+
+------------------------------------------------------------------------------
+ETAPA 6 — GERAR OS SEGREDOS / CHAVES DAS APIS
+------------------------------------------------------------------------------
+O SECRET_KEY já foi gerado na etapa 5. Agora as chaves das plataformas.
+Você só precisa das que for usar (deixe vazio o resto):
+
+6.1 YouTube (para monitorar seu canal) — GRÁTIS
+  1. Chrome > console.cloud.google.com (entre com seu Gmail).
+  2. [Selecionar projeto] > [Novo projeto] > nome "xhakinha" > [Criar].
+  3. Menu ☰ > [APIs e serviços] > [Biblioteca] > pesquise
+     "YouTube Data API v3" > [Ativar].
+  4. [APIs e serviços] > [Credenciais] > [Criar credenciais] > [Chave de API].
+  5. Copie a chave (começa com "AIza..."). Você vai colar no .env.
+  COTA: a cota padrão é 10.000 unidades/dia. O sistema usa o feed RSS (custo
+  zero) e gasta ~1 unidade por verificação de live: cerca de 300/dia. O limite
+  próprio do sistema é 9.000 (YOUTUBE_DAILY_QUOTA).
+
+6.2 Twitch (opcional) — GRÁTIS
+  1. dev.twitch.tv/console > [Register Your Application].
+  2. Nome: xhakinha-clips. OAuth Redirect URL: https://localhost  Categoria:
+     Application Integration. [Create].
+  3. [Manage] > copie o Client ID e [New Secret] para gerar o Client Secret.
+
+6.3 TikTok (para postar) — veja a Etapa 14.
+6.4 Instagram (para postar) — veja a Etapa 14.
+
+------------------------------------------------------------------------------
+ETAPA 7 — EDITAR O .env
+------------------------------------------------------------------------------
+No terminal do Codespace:
+
+$ nano .env
+  O que faz: abre o editor de texto simples. Use o dedo para mover o cursor.
+  Preencha (sem espaços ao redor do "="):
+    DOMAIN=          (você preenche na etapa 9, ex.: xhakinha.duckdns.org)
+    PUBLIC_BASE_URL= (ex.: https://xhakinha.duckdns.org)
+    YOUTUBE_API_KEY= (cole a chave "AIza...")
+    TWITCH_CLIENT_ID / TWITCH_CLIENT_SECRET (se usar)
+  Salvar: segure Ctrl e toque X, depois Y e Enter.
+  (Alternativa mais fácil no celular: no menu à esquerda do Codespace, toque
+  no arquivo ".env" e edite como um editor normal. Salve com Ctrl+S ou
+  ☰ > File > Save.)
+NUNCA publique o .env nem tire print dele.
+
+------------------------------------------------------------------------------
+ETAPA 8 — CRIAR A INFRAESTRUTURA GRATUITA (ORACLE CLOUD)
+------------------------------------------------------------------------------
+8.1 Criar a conta
+  1. Chrome > oracle.com/br/cloud/free > [Comece gratuitamente].
+  2. Preencha dados, verifique e-mail e celular. Escolha a "região de origem"
+     (Home Region) — ex.: Brazil East (São Paulo) ou Vinhedo. NÃO dá para
+     trocar depois e as máquinas grátis só existem na região de origem.
+  3. Cartão: é só verificação (cobra e devolve um valor simbólico). Escolha
+     SEMPRE o modo "Always Free" e NÃO faça upgrade para pago.
+  OBSERVAÇÃO DE CUSTO: o projeto foi desenhado para custo zero. Mesmo assim,
+  confira em [Faturamento] que está no nível gratuito e não clique em "Upgrade".
+
+8.2 Gerar a chave SSH (no Codespace)
+  $ ssh-keygen -t ed25519 -f ~/.ssh/oracle -N ""
+    ESPERADO: "Your public key has been saved in /home/codespace/.ssh/oracle.pub"
+  $ cat ~/.ssh/oracle.pub
+    ESPERADO: uma linha que começa com "ssh-ed25519 AAAA...". COPIE essa linha
+    (toque e segure > Copiar).
+
+8.3 Criar a máquina (Instância)
+  1. Console da Oracle > ☰ > [Compute] > [Instances] > [Create instance].
+  2. Name: xhakinha.
+  3. Image: [Edit] > Canonical Ubuntu 22.04 (ou 24.04).
+  4. Shape: [Change shape] > "Ampere" > VM.Standard.A1.Flex >
+     escolha 2 OCPU e 12 GB (o máximo do plano grátis). Deve aparecer a
+     etiqueta "Always Free-eligible".
+  5. Networking: deixe "Assign a public IPv4 address" marcado.
+  6. Add SSH keys: [Paste public keys] > cole a linha do passo 8.2.
+  7. Boot volume: marque "Specify a custom boot volume size" = 150 GB
+     (o grátis soma até 200 GB).
+  8. [Create].
+  ESPERADO: o status vira "RUNNING" e aparece o "Public IP address" (ex.:
+  129.xxx.xxx.xxx). ANOTE esse IP.
+  SE DER ERRADO: "Out of host capacity" = a Oracle está sem máquinas grátis
+  agora. Tente de novo mais tarde (madrugada costuma funcionar) ou outra
+  "Availability domain".
+
+8.4 Liberar as portas 80 e 443 (rede da Oracle)
+  1. Na página da instância toque no nome da "Subnet" > "Default Security List".
+  2. [Add Ingress Rules]: Source CIDR 0.0.0.0/0, IP Protocol TCP,
+     Destination Port Range 80 > [Add]. Repita com 443.
+  (A porta 22 do SSH já vem liberada.)
+
+------------------------------------------------------------------------------
+ETAPA 9 — HTTPS GRÁTIS (ENDEREÇO DUCKDNS)
+------------------------------------------------------------------------------
+HTTPS é obrigatório: sem ele a senha do painel viajaria sem proteção e o
+Instagram/TikTok não aceitam o fluxo.
+1. Chrome > duckdns.org > [Sign in] (com Google ou GitHub).
+2. Em "domains" digite um nome (ex.: xhakinha-seunome) > [add domain].
+3. No campo "current ip" cole o IP da Oracle (passo 8.3) > [update ip].
+ESPERADO: aparece "xhakinha-seunome.duckdns.org" apontando para o seu IP.
+4. No .env (Etapa 7) coloque:
+     DOMAIN=xhakinha-seunome.duckdns.org
+     PUBLIC_BASE_URL=https://xhakinha-seunome.duckdns.org
+O certificado HTTPS (Let's Encrypt) é emitido SOZINHO pelo Caddy, de graça,
+quando o sistema sobe (etapa 11).
+
+------------------------------------------------------------------------------
+ETAPA 10 — CONFIGURAR O SERVIDOR E INSTALAR O DOCKER
+------------------------------------------------------------------------------
+10.1 Entrar no servidor (no terminal do Codespace):
+$ ssh -i ~/.ssh/oracle -o StrictHostKeyChecking=accept-new ubuntu@SEU_IP
+  (troque SEU_IP pelo IP da Oracle). ESPERADO: prompt "ubuntu@xhakinha:~$".
+  SE DER ERRADO: "Permission denied (publickey)" = a chave colada na etapa
+  8.3 não é a de ~/.ssh/oracle.pub. "Connection timed out" = máquina ainda
+  iniciando (espere 2 min) ou porta 22 bloqueada.
+
+10.2 Liberar as portas dentro do Ubuntu (a Oracle bloqueia por padrão):
+$ sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
+$ sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
+$ sudo apt-get update && sudo apt-get install -y iptables-persistent
+  (na tela azul, responda [Yes] duas vezes)
+$ sudo netfilter-persistent save
+  O que faz: abre 80/443 e grava a regra para sobreviver a reinício.
+
+10.3 Instalar o Docker:
+$ curl -fsSL https://get.docker.com | sudo sh
+$ sudo usermod -aG docker ubuntu
+$ exit
+  Depois entre de novo (comando 10.1) para a permissão valer.
+$ docker --version && docker compose version
+  ESPERADO: mostra as versões do Docker e do Compose.
+
+10.4 Criar uma "memória extra" (swap) de segurança (recomendado):
+$ sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+$ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+$ exit
+  (Saia do servidor para voltar ao terminal do Codespace.)
+
+------------------------------------------------------------------------------
+ETAPA 11 — ENVIAR O PROJETO E INICIAR OS SERVIÇOS
+------------------------------------------------------------------------------
+No terminal do CODESPACE (não no servidor), dentro da pasta do projeto:
+
+$ rsync -av -e "ssh -i ~/.ssh/oracle" --exclude '.git' --exclude '*.zip' ./ ubuntu@SEU_IP:~/xhakinha/
+  O que faz: copia o projeto (inclusive o .env) para o servidor.
+  ESPERADO: lista de arquivos e "sent ... bytes".
+
+$ ssh -i ~/.ssh/oracle ubuntu@SEU_IP
+$ cd ~/xhakinha
+$ docker compose up -d --build
+  O que faz: constrói a imagem (instala FFmpeg, yt-dlp, faster-whisper...) e
+  sobe 3 serviços: app (painel + motor), caddy (HTTPS) e volume de dados.
+  Demora de 5 a 15 minutos na primeira vez.
+  ESPERADO: no fim, "Container xhakinha-app-1 Started" e "caddy Started".
+$ docker compose ps
+  ESPERADO: app e caddy com status "running"/"Up".
+$ docker compose logs --tail 30 app
+  ESPERADO: sem "ERRO DE CONFIGURAÇÃO". Se aparecer esse erro, ele diz o que
+  falta no .env.
+
+11.1 Criar o administrador (login do painel) — NÃO existe senha padrão:
+$ docker compose exec app python -m xhakinha.cli create-admin
+  Digite um usuário e uma senha FORTE (mínimo 10 caracteres). A senha digitada
+  não aparece na tela (é normal).
+  ESPERADO: "Administrador 'seu-usuario' criado/atualizado."
+
+11.2 Conferir dependências:
+$ docker compose exec app python -m xhakinha.cli doctor
+  ESPERADO: "ffmpeg: True | yt-dlp: {'ok': True, 'version': ...} | whisper: True ..."
+  (Se "rosto: False", o enquadramento usa o centro do vídeo — veja seção 24.)
+
+------------------------------------------------------------------------------
+ETAPA 12 — MODELOS LOCAIS (IA)
+------------------------------------------------------------------------------
+- Transcrição (faster-whisper): baixa SOZINHA na primeira análise (modelo
+  "small", ~460 MB). Roda no servidor, sem custo e sem API. Se a máquina
+  estiver lenta, no .env use WHISPER_MODEL=base (menor) e reinicie:
+  $ docker compose up -d
+- Descrições por IA (Ollama) — OPCIONAL: no servidor de 2 OCPU o modelo
+  qwen2.5:3b é lento. Sem Ollama o sistema usa um modelo de texto próprio
+  (sempre funciona; o painel mostra "gerado por: modelo-de-texto").
+  Para ativar mesmo assim: rode o Ollama no servidor, coloque
+  OLLAMA_URL=http://host.docker.internal:11434 no .env e reinicie.
+- Análise de áudio/vídeo/rosto/cena: já vem embutida (FFmpeg + OpenCV).
+LIMITE HONESTO: sem GPU, o processamento é lento (um vídeo de 1 hora pode
+levar bastante tempo). É esperado; a fila segura o trabalho.
+
+------------------------------------------------------------------------------
+ETAPA 13 — ABRIR O PAINEL E INSTALAR COMO APLICATIVO (PWA)
+------------------------------------------------------------------------------
+1. No Chrome do celular abra: https://SEU-DOMINIO.duckdns.org
+   (na primeira vez pode levar ~30 segundos para o certificado sair).
+   ESPERADO: cadeado fechado e tela de login "XHAKINHA CLIPS AI".
+2. Entre com o usuário e a senha da etapa 11.1.
+3. Instalar: toque nos 3 pontinhos do Chrome > [Adicionar à tela inicial] >
+   [Instalar]. Pronto: o ícone "Xhakinha" aparece na tela inicial.
+SE DER ERRADO: "Não é possível acessar o site" = DNS ainda propagando (espere
+5 min) ou portas 80/443 fechadas (refaça 8.4 e 10.2). Aviso de certificado =
+o DuckDNS ainda não aponta para o IP certo (refaça a etapa 9).
+
+------------------------------------------------------------------------------
+ETAPA 14 — CONECTAR AS FONTES, TIKTOK E INSTAGRAM
+------------------------------------------------------------------------------
+14.1 Conectar fontes (aba [Fontes])
+  1. Plataforma: YouTube. Nome: o que quiser. Referência: seu @handle
+     (ex.: @meucanal) ou o ID "UC...".
+  2. Intervalo: 300 (5 min) é bom.
+  3. Marque a declaração de que o conteúdo é SEU/autorizado. [Cadastrar].
+  4. Toque [Testar conexão]. ESPERADO: "✅ Canal: <nome do seu canal>".
+  O sistema passa a monitorar lives e uploads novos e também varre o acervo
+  antigo (devagar, sem estourar a cota).
+  Upload manual: aba [Painel] > "Enviar vídeo (upload)".
+
+14.2 Autorizar o TIKTOK
+  1. developers.tiktok.com > entre > [Manage apps] > [Connect an app] (crie).
+  2. Adicione os produtos "Login Kit" e "Content Posting API" (marque
+     "Direct Post"). Em Login Kit > Redirect URI coloque EXATAMENTE:
+     https://SEU-DOMINIO.duckdns.org/api/oauth/tiktok/callback
+  3. Scopes: user.info.basic, video.publish, video.upload, video.list.
+  4. Copie Client key e Client secret para o .env (TIKTOK_CLIENT_KEY /
+     TIKTOK_CLIENT_SECRET) e reinicie: $ docker compose up -d  (no servidor)
+  5. Enquanto o app estiver em desenvolvimento/não auditado, use a conta
+     como "Target user"/testador (Sandbox) e deixe a CONTA do TikTok
+     PRIVADA. Posts saem como "Só eu". O TikTok só libera público após a
+     auditoria do app (processo do próprio TikTok; sem custo, mas exige
+     aprovação e pode demorar/ser negada).
+  6. No painel: [Config] > [Conectar TikTok] > autorize.
+  ESPERADO: volta ao painel com "TikTok: conectado".
+  Quando o app for AUDITADO: marque "Meu app do TikTok já foi AUDITADO" em
+  [Config] e escolha a privacidade desejada.
+
+14.3 Autorizar o INSTAGRAM
+  Requisitos: conta Instagram PROFISSIONAL (Perfil > Configurações > Tipo de
+  conta > Mudar para conta profissional).
+  1. developers.facebook.com > [Meus apps] > [Criar app] (tipo "Business").
+  2. Adicione o produto "Instagram" (API de publicação de conteúdo). Siga o
+     assistente "Configuração da API do Instagram" e adicione SUA conta como
+     testador/função no app.
+  3. Gere o token de acesso de longa duração e anote o ID numérico da conta
+     profissional (ig_user_id).
+  4. No painel: [Config] > Instagram: cole o token e o ID > [Conectar
+     Instagram]. ESPERADO: "Instagram conectado @seu_usuario".
+  5. Se o token veio do fluxo "login do Instagram", ponha no .env:
+     GRAPH_BASE=https://graph.instagram.com/v21.0   (e reinicie).
+  OBSERVAÇÕES: tokens de longa duração expiram (cerca de 60 dias) — renove
+  antes. Para contas que não são suas/testadoras, a Meta exige "App Review".
+  A API do Instagram permite até 100 publicações/24h por conta.
+  O vídeo precisa estar numa URL pública: o sistema gera uma URL ASSINADA e
+  TEMPORÁRIA no seu próprio domínio HTTPS (por isso a etapa 9 é obrigatória).
+
+14.4 Configurar os @ (marca d'água)
+  [Config] > "@ do Instagram na marca d'água" e "@ do TikTok...". Escreva o
+  @ real de cada conta (o sistema NÃO inventa nenhum). Opacidade padrão 0.65
+  (65%). Vazio = o vídeo sai sem marca.
+
+------------------------------------------------------------------------------
+ETAPA 15 — CONFIGURAR A PUBLICAÇÃO AUTOMÁTICA
+------------------------------------------------------------------------------
+[Config] > "Metas, horários e regras":
+  - Meta mínima/normal/máxima por rede (padrão 8 / 10 / 12 — a máxima limita
+    só a PUBLICAÇÃO; a produção NUNCA para).
+  - Nota mínima p/ publicar (padrão 60): clipe abaixo disso fica no estoque.
+  - Janela de horário (08:00–23:30) e intervalo mínimo (45 min).
+  - Marque as redes em que quer publicar. [Salvar].
+Depois de conectar as contas, o sistema agenda e publica sozinho, sem pedir
+aprovação clipe a clipe (respeitando as regras de cada plataforma).
+Horários: no começo usa horários-padrão GENÉRICOS (suposição, rotulada no
+painel). Com o tempo, usa os dados REAIS da sua conta e testa novos horários.
+Nada garante viralização.
+
+------------------------------------------------------------------------------
+ETAPA 16 — USAR O PAINEL (resumo dos botões)
+------------------------------------------------------------------------------
+[Painel]: ▶ Iniciar / ⏸ Pausar / ⏯ Retomar / ■ Parar o motor; TESTAR
+ PROCESSAMENTO REAL; metas do dia; CPU, memória, disco; cota do YouTube;
+ acervo antigo; aprendizado; upload de vídeo.
+[Fontes]: cadastrar, testar, ativar/desativar fontes e ver erros.
+[Clipes]: estoque com prévia em vídeo, nota e critérios; arquivar/restaurar.
+[Posts]: publicações, status REAL, links; ↻ tentar de novo; ✕ cancelar;
+ "Publicar" (confirmar).
+[Falhas]: fila de falhas — "Tentar de novo".
+[Config]: contas, metas, @, retenção, backups, sair.
+[Logs]: eventos e histórico de tentativas.
+
+------------------------------------------------------------------------------
+ETAPA 17 — O PWA E O CELULAR (verificação no Android)
+------------------------------------------------------------------------------
+Confirme no Chrome (3 pontinhos): aparece [Instalar app]. Depois de instalado,
+abra pelo ícone: deve abrir em tela cheia, sem barra do navegador. O "service
+worker" guarda só a casca do app; os dados nunca ficam em cache.
+
+------------------------------------------------------------------------------
+ETAPA 18 — TESTAR A CRIAÇÃO DE CLIPES (botão TESTAR PROCESSAMENTO REAL)
+------------------------------------------------------------------------------
+Pré-requisitos: uma fonte conectada e AUTORIZADA e (para testar o envio) o
+TikTok ou o Instagram conectado.
+1. [Painel] > toque no botão grande TESTAR PROCESSAMENTO REAL.
+2. Acompanhe os passos (✅/❌). Ele pega 1 vídeo real curto da sua fonte,
+   gera 1 clipe 9:16, mostra a prévia, a descrição e as hashtags.
+3. TikTok: o envio sai em modo PRIVADO ("Só eu") se o app não for auditado.
+   Instagram: não existe modo privado na API; o painel PARA antes e mostra
+   o botão "CONFIRMAR PUBLICAÇÃO PÚBLICA". Só publica se você tocar nele.
+4. No final aparece o diagnóstico: o que funcionou e o que precisa corrigir.
+O teste NUNCA apaga ou altera o vídeo original e NUNCA simula sucesso.
+SE DER ERRADO: leia a mensagem do passo com ❌ (ex.: "Nenhuma fonte conectada",
+"yt-dlp não instalado", "PUBLIC_BASE_URL não configurada").
+
+------------------------------------------------------------------------------
+ETAPA 19 — VERIFICAR AS PUBLICAÇÕES
+------------------------------------------------------------------------------
+[Posts]: status "published" só aparece após a plataforma CONFIRMAR. TikTok
+privado aparece com visibilidade SELF_ONLY e sem link público (é normal:
+o TikTok só informa o ID público quando o post é público). Instagram mostra
+o link verdadeiro (permalink). Abra o app da rede para conferir.
+
+------------------------------------------------------------------------------
+ETAPA 20 — MANTER FUNCIONANDO 24 HORAS
+------------------------------------------------------------------------------
+- Os serviços têm "restart: unless-stopped": voltam sozinhos se o servidor
+  reiniciar. Tarefas interrompidas são retomadas automaticamente.
+- Oracle pode recolher máquinas grátis ociosas (veja avisos). Se isso
+  acontecer, crie outra e restaure o backup (seção 23).
+- Veja a saúde: painel > [Painel] > "Sistema" e [Logs].
+- Se o disco encher: o sistema apaga SOMENTE originais já processados e
+  nunca apaga clipes não publicados. Ajuste MIN_FREE_GB no .env.
+
+------------------------------------------------------------------------------
+ETAPA 21 — ATUALIZAR O SISTEMA
+------------------------------------------------------------------------------
+1. Suba a nova versão do ZIP no GitHub (como na Etapa 3) e abra o Codespace.
+2. $ unzip -o XHAKINHA-CLIPS-AI.zip && cd xhakinha-clips-ai
+   (NÃO apaga seu .env nem seus dados, que ficam no servidor. Se esta cópia do
+   Codespace não tiver o .env, tudo bem: o comando abaixo exclui o .env do envio
+   e o do servidor continua valendo.)
+3. $ rsync -av -e "ssh -i ~/.ssh/oracle" --exclude '.git' --exclude '.env' --exclude '*.zip' ./ ubuntu@SEU_IP:~/xhakinha/
+4. $ ssh -i ~/.ssh/oracle ubuntu@SEU_IP "cd ~/xhakinha && docker compose up -d --build"
+Os dados (banco, clipes, backups) ficam no volume Docker e são preservados.
+
+------------------------------------------------------------------------------
+ETAPA 22 — (reservada) CAPACIDADE EXTRA
+------------------------------------------------------------------------------
+Mais workers no mesmo servidor: $ docker compose --profile extra up -d --scale worker=1
+(o servidor grátis tem só 2 OCPU; mais workers dividem o mesmo hardware.)
+
+------------------------------------------------------------------------------
+ETAPA 23 — BACKUP E RESTAURAÇÃO
+------------------------------------------------------------------------------
+- Automático: o sistema cria backup do banco a cada 12 h (configurável) e
+  guarda os 14 últimos no servidor.
+- Pelo celular: [Config] > "Backup" > [Criar backup agora] e toque no nome
+  do arquivo para BAIXAR no Android. Guarde no Google Drive.
+- Restaurar (servidor novo): suba o sistema (etapas 10–11), envie o arquivo
+  .db e rode:
+  $ docker compose stop app
+  $ docker run --rm -v xhakinha_xh_data:/data -v $PWD:/b alpine cp /b/SEU-BACKUP.db /data/xhakinha.db
+  $ docker compose up -d
+  (O backup guarda banco/configurações/contas. Clipes ainda não publicados
+  ficam no disco do servidor; para preservá-los, use também um "boot volume
+  backup" da Oracle — o plano grátis inclui 5 backups.)
+- Contas conectadas (tokens) ficam CIFRADAS no banco e só abrem com o mesmo
+  SECRET_KEY: GUARDE o seu .env num lugar seguro (gerenciador de senhas).
+
+------------------------------------------------------------------------------
+ETAPA 24 — RESOLVER ERROS COMUNS
+------------------------------------------------------------------------------
+"ERRO DE CONFIGURAÇÃO: SECRET_KEY ausente..."  -> rode python3 scripts/setup.py
+   (ou preencha SECRET_KEY com 32+ caracteres no .env) e reinicie.
+Painel não abre / timeout  -> portas 80/443 (8.4 e 10.2); DNS DuckDNS (etapa 9);
+   $ docker compose ps  (caddy e app "Up").
+Aviso de certificado  -> DOMAIN errado no .env ou IP errado no DuckDNS.
+"nenhum administrador criado"  -> etapa 11.1.
+"muitas tentativas; aguarde 10 minutos"  -> proteção contra senha chutada.
+"yt-dlp não está instalado"  -> use a imagem Docker deste projeto (já inclui);
+   confira com o comando doctor (11.2). O sistema falha UMA vez e avisa; não
+   gasta tentativas à toa.
+"Acesso não autorizado/indisponível (não vamos contornar)" -> o vídeo é
+   privado/com login/DRM. O sistema NÃO contorna restrições. Use upload
+   manual ou torne o vídeo acessível ao seu canal.
+Instagram "PUBLIC_BASE_URL não configurada"  -> etapa 9 e 7.
+Instagram "URL pública não serve o vídeo"  -> HTTPS/domínio/Caddy fora do ar.
+TikTok "unaudited_client_can_only_post_to_private_accounts"  -> deixe a conta
+   do TikTok privada ou conclua a auditoria do app.
+TikTok "spam_risk_*"  -> o TikTok limitou; a publicação vai para [Falhas].
+YouTube "quotaExceeded"  -> o sistema pausa o monitoramento até o reset
+   (meia-noite do horário do Pacífico) e retoma sozinho. Ver cota no painel.
+Rosto: False no doctor  -> o OpenCV do ambiente não trouxe o modelo de rosto;
+   o enquadramento fica centralizado. Reconstrua a imagem: docker compose build --no-cache
+Fila parada  -> [Painel] confira se o motor está "rodando" (▶ Iniciar).
+Clipe com falha  -> aba [Posts] > ↻ tentar de novo (o arquivo é preservado).
+Disco cheio  -> aumente MIN_FREE_GB; apague backups antigos; veja a seção 20.
+Esqueci a senha do painel  -> no servidor:
+   $ docker compose exec app python -m xhakinha.cli create-admin
+   (use o mesmo usuário: a senha é substituída).
+Codespace "sem horas"  -> a cota grátis mensal acabou; espere virar o mês. O
+   servidor da Oracle continua funcionando sem o Codespace.
+
+------------------------------------------------------------------------------
+O QUE NÃO DÁ PARA FAZER PELO ANDROID (e a alternativa)
+------------------------------------------------------------------------------
+- Enviar PASTAS inteiras ao GitHub pelo navegador do celular: por isso
+  enviamos o ZIP e extraímos dentro do Codespace.
+- Teclas especiais no terminal podem ser chatas: use o editor visual do
+  Codespace para editar o .env (Etapa 7) em vez do nano.
+- Auditoria do TikTok e App Review da Meta são processos DAS PLATAFORMAS
+  (feitos nos sites delas, por você); nenhum software pode fazê-los por você.
+
+FIM. Em caso de dúvida, consulte também o README.md e o STATUS-DO-PROJETO.txt.

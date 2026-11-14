@@ -1,0 +1,17 @@
+name = "xhakinha-coord"
+main = "entry.js"
+compatibility_date = "2026-01-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "xhakinha"
+database_id = "COLE-AQUI-O-ID-DO-D1"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[[rules]]
+type = "Text"
+globs = ["**/*.sql", "**/*.html"]
+fallthrough = true
+# Segredos (não ficam aqui):  wrangler secret put EXEC_TOKEN  /  wrangler secret put ADMIN_TOKEN

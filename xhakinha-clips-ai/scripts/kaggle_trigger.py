@@ -1,0 +1,40 @@
+"""Decide se vale iniciar uma nova sessão Kaggle e, se sim, faz `kaggle kernels push` (que inicia a execução).
+Regras: não inicia se há cérebro ativo, se o Kaggle está com breaker aberto/pausado ou se a cota semanal estimada acabou."""
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+import requests
+
+
+def decide(state: dict) -> tuple[bool, str]:
+    brain = next((l for l in state["locks"] if l["name"] == "brain"), None)
+    if brain and brain["owner"] and brain["lease_until"] > state["now"]:
+        return False, "cérebro ativo"
+    if any(e["status"] == "active" and e["provider"].startswith("kaggle") for e in state["executors"]):
+        return False, "já existe sessão Kaggle ativa"
+    for p in state["providers"]:
+        if p["name"] == "kaggle-gpu":
+            if p["breaker"] == "open" or p["paused"]:
+                return False, "kaggle-gpu indisponível (breaker/pausa)"
+            lim = p["config"].get("week_seconds", 0) * p["config"].get("safety", 0.9)
+            if lim and p["usage_s"]["week"] >= lim * 0.95:
+                return False, "cota semanal estimada de GPU quase no fim"
+    return True, "sem cérebro e há capacidade"
+
+
+def main() -> int:
+    r = requests.get(os.environ["XH_COORD_URL"].rstrip("/") + "/api/state", timeout=30,
+                     headers={"Authorization": "Bearer " + os.environ["XH_ADMIN_TOKEN"], "X-Requested-With": "XHK"})
+    r.raise_for_status()
+    ok, why = decide(r.json())
+    print("decisão:", ok, "-", why)
+    if not ok:
+        return 0
+    return subprocess.call(["kaggle", "kernels", "push", "-p", "kaggle"])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

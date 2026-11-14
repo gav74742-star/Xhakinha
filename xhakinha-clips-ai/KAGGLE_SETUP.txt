@@ -1,0 +1,26 @@
+XHAKINHA CLIPS AI — CONFIGURAÇÃO KAGGLE + DRIVE + COORDENADOR (referência rápida)
+
+SECRETS do Kaggle (Notebook → Add-ons → Secrets). Nomes EXATOS:
+  SECRET_KEY              chave forte (>=32 caracteres): python scripts/setup.py gera uma
+  XH_COORD_URL            https://xhakinha-coord.SEUUSUARIO.workers.dev
+  XH_COORD_TOKEN          o mesmo valor do segredo EXEC_TOKEN do Worker
+  GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_REFRESH_TOKEN
+  YOUTUBE_API_KEY (opcional), TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET (opcional)
+Segredos do GitHub (Settings → Secrets → Actions) para o gatilho:
+  XH_COORD_URL, XH_ADMIN_TOKEN, KAGGLE_USERNAME, KAGGLE_KEY
+Segredos do Worker (wrangler secret put): EXEC_TOKEN, ADMIN_TOKEN (valores longos e diferentes)
+
+ESTRUTURA NO DRIVE (criada automaticamente em "XHAKINHA_CLIPS_AI"):
+  originals/  clips/pending/  clips/published/  clips/failed/  db/snapshots/  checkpoints/  logs/  exports/  tmp/
+
+REGRAS ANTI-PERDA IMPLEMENTADAS: upload resumível + conferência de MD5; download em .part + sha256; nunca sobrescreve;
+nunca apaga originais/clipes (o Drive recusa apagar fora de snapshots/checkpoints/tmp/logs); snapshot do SQLite com
+manifesto gravado por último; restauração só de snapshot verificado (se houver snapshots e nenhum válido, NÃO inicia vazio);
+um único "cérebro" por vez (lock com fencing); publicação só com o lock em mãos; Drive cheio => pausa ingestão sem apagar nada.
+
+LIMITES CONHECIDOS (honestidade):
+  * Cotas do Kaggle/Colab/Actions são ESTIMATIVAS conservadoras (não há API oficial de consulta); edite em providers.config.
+  * Instagram exige video_url público HTTPS: sem servidor sempre ligado isso NÃO está resolvido; TikTok (upload direto) funciona.
+  * TikTok sem auditoria => posts privados (SELF_ONLY). Isso é regra do TikTok, não do projeto.
+  * Execução "garantida" no horário exato não existe em nuvem gratuita: se não houver cérebro ativo, as publicações ficam na
+    fila e são reagendadas quando uma sessão voltar.

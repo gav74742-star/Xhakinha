@@ -1,0 +1,84 @@
+XHAKINHA CLIPS AI — TUTORIAL COMPLETO PARA ANDROID (SÓ CELULAR, CUSTO R$ 0, SEM CARTÃO)
+Arquitetura: GitHub (código) → Cloudflare Worker+D1 (coordenador sempre ligado) → Kaggle (processa) → Google Drive (guarda tudo)
+→ TikTok/Instagram. Colab é ajudante opcional.
+
+ANTES DE COMEÇAR — leia isto
+ - Tudo aqui é gratuito, mas cada serviço pode mudar limites. Os números do projeto são estimativas conservadoras.
+ - Use UMA conta de cada serviço. Não crie várias contas para driblar limites (viola regras e o projeto não faz isso).
+ - Guarde tokens/senhas num gerenciador de senhas. Nunca cole em prints ou chats.
+ - Use o Chrome do Android; no menu (⋮) marque "Site para computador" quando a tela ficar apertada.
+ - Tempo total: ~1h30. Faça em etapas; cada etapa termina com "COMO SABER QUE DEU CERTO".
+
+ETAPA 1 — GitHub (guarda o código)
+ 1. github.com → Sign up (e-mail + senha, sem cartão). Confirme o e-mail.
+ 2. Envie o projeto: no navegador, New repository → nome xhakinha-clips-ai → Private → Create.
+ 3. No celular não dá para subir ZIP inteiro pela web com pastas. Alternativa 100% celular: instale o app "Termux" (F-Droid),
+    depois:  pkg install git unzip   →  termux-setup-storage  →  unzip /sdcard/Download/XHAKINHA-CLIPS-AI.zip
+    →  cd xhakinha-clips-ai  →  git init && git add -A && git commit -m inicial
+    →  git remote add origin https://github.com/SEU_USUARIO/xhakinha-clips-ai.git  →  git push -u origin master
+    (a senha do push é um Personal Access Token: GitHub → Settings → Developer settings → Tokens (classic) → escopo "repo").
+ COMO SABER QUE DEU CERTO: o repositório mostra as pastas xhakinha/, notebooks/, cloudflare/.
+ 4. Edite notebooks/kaggle_worker.ipynb? NÃO precisa no celular: na célula do Kaggle você troca SEU_USUARIO pela web (etapa 5).
+    Se o repositório for privado, o Kaggle não consegue clonar sem token; mais simples: deixe PÚBLICO (o código não tem segredos;
+    segredos ficam só nos Secrets).
+
+ETAPA 2 — Google Drive + permissão do app (obtém o GDRIVE_REFRESH_TOKEN)
+ 1. console.cloud.google.com → crie um projeto "xhakinha" (sem cobrança, não peça cartão).
+ 2. APIs e serviços → Biblioteca → "Google Drive API" → Ativar.
+ 3. Tela de permissão OAuth → Externo → preencha nome do app e seu e-mail → Escopos: adicione ".../auth/drive.file".
+    IMPORTANTE: depois clique em "PUBLICAR APP" (status "Em produção"). Se ficar em "Teste", o token expira em 7 dias.
+    (App só seu, sem verificação: o Google mostra um aviso "app não verificado"; é você mesmo, clique em Avançado → continuar.)
+ 4. Credenciais → Criar credenciais → ID do cliente OAuth → tipo "TVs e dispositivos de entrada limitada".
+    Anote CLIENT_ID e CLIENT_SECRET.
+ 5. Obter o token (fluxo por código, só celular): no Termux:
+      pkg install python && pip install requests
+      cd xhakinha-clips-ai
+      export GDRIVE_CLIENT_ID=...  GDRIVE_CLIENT_SECRET=...
+      python scripts/drive_authorize.py
+    O Termux mostra uma URL e um CÓDIGO. Abra a URL no navegador, digite o código, aceite. O Termux imprime GDRIVE_REFRESH_TOKEN.
+ COMO SABER QUE DEU CERTO: aparece uma linha longa começando com "1//".
+ Observação: o app só vê arquivos que ele mesmo criou (escopo drive.file). A pasta XHAKINHA_CLIPS_AI será criada sozinha.
+
+ETAPA 3 — Cloudflare (coordenador sempre ligado)
+ 1. dash.cloudflare.com → Sign up (sem cartão no plano Free).
+ 2. Workers & Pages → D1 → Create database → nome "xhakinha". Copie o Database ID.
+ 3. Criar o Worker pelo celular: o caminho oficial é a ferramenta "wrangler" (linha de comando). No Termux:
+      pkg install nodejs-lts && npm install -g wrangler && wrangler login   (abre o navegador para autorizar)
+      cd xhakinha-clips-ai/cloudflare
+      edite wrangler.toml e troque COLE-AQUI-O-ID-DO-D1 pelo Database ID (use: nano wrangler.toml)
+      wrangler secret put EXEC_TOKEN    (cole um valor longo aleatório e ANOTE)
+      wrangler secret put ADMIN_TOKEN   (outro valor longo, diferente)
+      wrangler deploy
+    A URL final é https://xhakinha-coord.SEUUSUARIO.workers.dev
+ 4. Abra essa URL no navegador, cole o ADMIN_TOKEN: o painel mostra provedores, executores, fila e locks.
+ COMO SABER QUE DEU CERTO: o painel abre e mostra "fila vazia".
+ (Se o wrangler não funcionar no seu Termux, use o editor de Worker no painel da Cloudflare e cole os arquivos core.js, worker.js e
+  entry.js; me avise que adapto — este caminho NÃO foi testado.)
+
+ETAPA 4 — Kaggle
+ 1. kaggle.com → Register. Em Settings → Phone Verification: verifique o telefone (necessário para Internet e GPU).
+ 2. Notebooks → New Notebook → File → Import → "GitHub" (ou Upload) e use notebooks/kaggle_worker.ipynb.
+ 3. Settings do notebook: Internet = On; Accelerator = GPU (T4 ou P100) se quiser transcrição rápida.
+ 4. Add-ons → Secrets: crie os nomes da lista do KAGGLE_SETUP.txt e marque "Attached" em cada um.
+ 5. Na primeira célula troque SEU_USUARIO pelo seu usuário do GitHub. Clique "Save Version" → "Save & Run All".
+ COMO SABER QUE DEU CERTO: no painel Cloudflare aparece um executor "kaggle-..." ativo e o lock "brain" com dono.
+ Uma sessão dura até ~12h; o projeto encerra com margem, salva snapshot e libera o lock.
+
+ETAPA 5 — Manter rodando
+ A) Manual (garantido): abra o Kaggle e rode "Save & Run All" quando o painel mostrar que não há cérebro.
+ B) Automático (opcional): no GitHub, Settings → Secrets → Actions, crie XH_COORD_URL, XH_ADMIN_TOKEN, KAGGLE_USERNAME, KAGGLE_KEY
+    (Kaggle → Settings → API → Create New Token). Edite kaggle/kernel-metadata.json trocando SEU_USUARIO_KAGGLE.
+    O workflow "kaggle-trigger" roda a cada 30 min, consulta o coordenador e só dispara se não houver cérebro. Se o Kaggle
+    recusar ou a cota semanal estimada acabar, ele não insiste. Obs.: o GitHub pode atrasar/pausar agendamentos.
+ C) Colab (ajudante): abra notebooks/colab_worker.ipynb no Colab, preencha Secrets (chave 🔑) e execute. É manual e não garantido.
+
+ETAPA 6 — Fontes e publicação
+ - Cadastre fontes e conecte TikTok/Instagram pelo painel do app (veja README). TikTok sem auditoria publica só como privado.
+ - Instagram precisa de URL pública do vídeo; sem servidor sempre ligado isso fica PENDENTE (ver STATUS-DO-PROJETO.txt).
+
+PROBLEMAS COMUNS
+ - "refresh token inválido": o app OAuth ficou em Teste (7 dias). Publique o app e rode drive_authorize.py de novo.
+ - "outro_cerebro_ativo": normal; essa sessão virou só executor.
+ - Drive cheio: o projeto PAUSA a ingestão e não apaga nada; libere espaço manualmente (Fotos/Gmail dividem os 15 GB).
+ - GPU indisponível/semana esgotada: tarefas vão para CPU/Colab ou esperam; o painel mostra a cota ESTIMADA.
+ - Executor sumiu: em até ~5 min o lease vence e a tarefa volta à fila, retomando dos checkpoints no Drive.

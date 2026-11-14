@@ -1,0 +1,64 @@
+==============================================================================
+ STATUS DO PROJETO — XHAKINHA CLIPS AI v1.0.0
+==============================================================================
+Resumo honesto: o sistema está IMPLEMENTADO e passou em 82 testes automatizados, mas NÃO ESTÁ "100% pronto":
+nunca rodou com contas reais do TikTok/Instagram, nem com vídeos reais, nem dentro do Docker. Veja as listas abaixo.
+
+NOTA SOBRE O ZIP ORIGINAL: o ZIP recebido continha só os prompts (nenhum código). Por decisão sua, o projeto foi
+construído do zero; os 5 problemas críticos da auditoria viraram requisitos com testes de regressão.
+
+IMPLEMENTADO E TESTADO (testes automatizados)
+- Fila persistente SQLite, retentativas com backoff+jitter, fila de falhas, recuperação após queda, dedupe.
+- Armazenamento separado (produção x clipes), integridade sha256, backup com rotação, Cleaner como única via de exclusão.
+- Pipeline: monitorar → adquirir → analisar → renderizar → agendar → publicar → métricas; original preservado.
+- Análise por sinal (riso/grito/surpresa), visão (movimento/rosto/nitidez), nota 0–100 com 8 critérios, blocos 30–60 min.
+- Edição: 9:16 H.264/AAC, rastreio de rosto suave (lógica testada), loudnorm, marca d'água @ (65%) por plataforma, sem legendas.
+- Metas mín/normal/máx configuráveis (8/10/12 por rede), meta máxima = limite de PUBLICAÇÃO (produção nunca para),
+  ciclo diário no fuso America/Sao_Paulo, estoque permanente, horários inteligentes (prior rotulado + dados reais), acervo
+  antigo (~5/semana configurável, gradual, sem repetição).
+- Publicação TikTok (Direct Post/FILE_UPLOAD + status) e Instagram (Reels via container + URL pública assinada) — lógica
+  testada contra servidor simulado; idempotência; confirmação real antes de "published".
+- YouTube com cota controlada (RSS grátis + videos.list), 403 quotaExceeded, reset no fuso do Pacífico.
+- Aprendizado por métricas reais (só ativa com ≥20 amostras e diz isso no painel).
+- Painel responsivo + PWA (service worker, manifest, ícones), login seguro, botões todos ligados a rotas existentes,
+  botão TESTAR PROCESSAMENTO REAL, upload seguro, backups pelo painel.
+- Segurança: ver RELATORIO-DE-TESTES.txt, seção B.
+
+IMPLEMENTADO, MAS NÃO VALIDADO NESTE AMBIENTE
+- Conectores Twitch e Instagram-como-fonte; yt-dlp real; transcrição faster-whisper; detecção Haar de rostos.
+- Docker/compose/Caddy (HTTPS); PWA em Android real; OAuth do TikTok no navegador.
+- Qualidade da seleção de momentos em vídeos reais.
+
+DEPENDE DE VOCÊ (credenciais/autorização que eu não posso obter)
+- YouTube: chave da Data API v3 (grátis).            - Twitch: Client ID/Secret (opcional, grátis).
+- TikTok: app em developers.tiktok.com com Content Posting API; AUDITORIA do app para postar público (sem ela, só privado).
+- Instagram: conta Profissional + app Meta + token de longa duração (renovar a cada ~60 dias) + App Review para contas de terceiros.
+- Domínio https (DuckDNS grátis) apontando para o servidor: obrigatório para Instagram e OAuth do TikTok.
+- Os @ reais de cada rede (o sistema não inventa).
+
+LIMITES DA INFRAESTRUTURA GRÁTIS (conferidos nas documentações oficiais em 2026-11)
+- Oracle Always Free: Ampere A1 equivalente a 2 OCPU/12 GB; 200 GB de disco; 10 TB/mês de saída; máquinas ociosas
+  podem ser recolhidas; às vezes não há capacidade. Processamento de vídeo sem GPU é lento — a fila absorve, sem perder trabalho.
+- GitHub Codespaces grátis: 120 h-núcleo/mês (≈60 h de uma máquina de 2 núcleos): serve para instalar, não para rodar 24 h.
+- YouTube Data API: 10.000 unidades/dia (o sistema usa um teto próprio de 9.000 e gasta bem menos).
+- Instagram API: 100 publicações/24 h por conta (a doc da Meta tem uma inconsistência; o sistema consulta o limite real).
+- TikTok: apps não auditados só postam em modo privado; limites de taxa da API (status: 30 req/min).
+
+PRODUÇÃO ILIMITADA?  Não há cota artificial de vídeos/lives/horas/clipes/fila. Os únicos limites são técnicos e
+configuráveis (workers, espaço em disco, cotas das APIs). Não prometo capacidade infinita.
+
+PRÓXIMOS PASSOS RECOMENDADOS
+1) Subir na Oracle, rodar `doctor`, cadastrar 1 fonte sua e clicar TESTAR PROCESSAMENTO REAL.
+2) Conferir a qualidade dos clipes na aba Clipes e ajustar a nota mínima.
+3) Conectar TikTok (privado) e Instagram; validar uma publicação de cada.
+4) Iniciar a auditoria do app TikTok e o App Review da Meta, se for publicar em contas além das suas.
+
+
+==== FASE MULTI-CLOUD (14/11/2026) ====
+FEITO e testado: coordenador (fila/leases/fencing/locks/breaker/cotas/reconciliação), cliente Drive (MD5, resumível, sem apagar),
+snapshots verificados, checkpoints por hash, executor, cérebro (Engine da fase 1 dentro de um executor), processamento remoto com
+ingestão verificada, runner Kaggle/Colab/GitHub, Worker Cloudflare (JS), painel, notebooks, workflows, gatilho Kaggle.
+PENDENTE / RISCOS: Instagram (URL pública sem servidor); validação em contas reais; nuvem gratuita não garante horário exato de
+publicação; cotas são estimativas; Colab só manual; Actions só leve (política de uso).
+Documentos: TUTORIAL-ANDROID-MULTICLOUD.txt, KAGGLE_SETUP.txt, docs/PESQUISA-MULTICLOUD.md, docs/ARQUITETURA-MULTICLOUD.md,
+RELATORIO-DE-TESTES-MULTICLOUD.txt. (TUTORIAL-INSTALACAO.txt descreve a arquitetura antiga Oracle/Docker.)

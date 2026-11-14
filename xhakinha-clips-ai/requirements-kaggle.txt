@@ -1,0 +1,11 @@
+# Dependências extras para Kaggle/Colab (ffmpeg e numpy/opencv já existem lá; instalar só o que falta)
+starlette
+uvicorn
+requests
+Pillow
+PyJWT
+cryptography
+psutil
+python-multipart
+yt-dlp
+faster-whisper

@@ -1,0 +1,126 @@
+==============================================================================
+ RELATÓRIO DE TESTES E AUDITORIA — XHAKINHA CLIPS AI v1.0.0
+==============================================================================
+Execução real neste ambiente (Linux, Python 3.13, FFmpeg do sistema):
+  $ pytest tests -q        ->  82 passed, 0 failed (3 min 52 s)
+
+LEGENDA
+  [REAL]  testado com código e ferramentas reais (FFmpeg, SQLite, servidor HTTP real, OpenCV).
+  [SIM]   usa servidor de plataforma FALSO (tests/fake_platforms.py) ou ferramenta falsa (script yt-dlp).
+          Prova a LÓGICA do nosso cliente; NÃO prova integração com a plataforma real.
+  [SINT]  usa VÍDEO SINTÉTICO gerado pelo FFmpeg (testsrc2 + áudio gerado). É teste técnico,
+          não conteúdo real. Nenhum vídeo real autorizado estava disponível neste ambiente.
+
+------------------------------------------------------------------------------
+A. OS 5 PROBLEMAS CRÍTICOS DA AUDITORIA (tests/test_regression_critical.py — 22 testes, todos OK)
+------------------------------------------------------------------------------
+Observação: o ZIP antigo não foi recebido (só o prompt). Como o projeto foi reconstruído do zero, os 5
+problemas foram tratados como REQUISITOS e provados por testes de regressão equivalentes.
+
+P1  Perda do vídeo original
+  OK [SINT] original preservado após falha de render; limpeza agressiva (carência 0) não apaga conteúdo não processado.
+  OK [SINT] retentativa funciona com o arquivo original disponível e conclui o processamento.
+  OK [SINT] original preservado com 0 clipes e dentro da carência; só o Cleaner apaga, depois da carência.
+  OK [SIM]  original preservado quando a meta máxima diária de publicação é atingida (publicação adiada, nada enviado).
+  OK [SINT] arquivo já baixado/íntegro não é baixado de novo na retentativa.
+P2  yt-dlp ausente
+  OK [REAL] sem yt-dlp: falha UMA vez (1 tentativa, error_kind=permanent), sem desperdiçar retentativas.
+  OK [REAL] validação de URL bloqueia http, hosts fora da lista, file:// e injeção de shell.
+  OK [REAL] classificação de erros: vídeo privado/DRM/login = permanente (NÃO contorna); 5xx = temporário.
+  OK [SIM]  com ferramenta presente (script yt-dlp falso), aquisição → fingerprint → processamento funciona.
+  Dependência declarada em requirements.txt; instalada no Dockerfile (via pip); checada por `doctor` e painel.
+P3  Instagram nunca concluído
+  OK [SIM]  fluxo completo: URL pública assinada → container → status_code → media_publish → permalink real; sem duplicar.
+  OK [SIM]  nunca marca "published" com container IN_PROGRESS.
+  OK [REAL] sem PUBLIC_BASE_URL: falha 1 vez, mensagem clara, needs_admin, arquivo preservado.
+  OK [SIM]  resposta perdida no media_publish (HTTP 500) NÃO gera post duplicado (verifica PUBLISHED antes de repetir).
+  OK [SIM]  limpeza: versão por plataforma e clipe apagados só após confirmação; estoque não publicado preservado.
+  OK [REAL] URL pública assinada: assinatura inválida/expirada/outra chave = 403; deixa de servir após publicar.
+P4  TikTok marcando sucesso sem confirmação
+  OK [SIM]  "published" só após PUBLISH_COMPLETE; publish_id guardado separado do ID público; link só se a API
+            devolver publicaly_available_post_id (grafia oficial conferida na doc).
+  OK [SIM]  app não auditado: força SELF_ONLY mesmo pedindo público; sem ID/URL inventados.
+  OK [SIM]  FAILED "internal" => re-init seguro (nada postado) e conclui; FAILED permanente (spam_risk) => fila de falhas.
+  OK [SIM]  erro "unaudited_client_can_only_post_to_private_accounts" explicado ao usuário.
+P5  Cota do YouTube
+  OK [SIM]  24h de monitoramento (288 verificações): ≤ 2 unidades (antes ~96.000/dia).
+  OK [SIM]  live em andamento: 288 unidades/dia (1 por verificação, em vez de 100).
+  OK [SIM]  resposta 403 quotaExceeded => bloqueio local até o reset (PT) sem novas chamadas à API.
+  OK [REAL] limite próprio diário aplicado; contador reinicia no dia do Pacífico.
+
+------------------------------------------------------------------------------
+B. SEGURANÇA (tests/test_web_security.py, tests/test_install_smoke.py, test_core.py)
+------------------------------------------------------------------------------
+  OK [REAL] sem SECRET_KEY / chave fraca = servidor RECUSA subir (nenhuma chave/senha padrão no código).
+  OK [REAL] varredura do código-fonte: sem segredo/senha embutidos.
+  OK [REAL] senha com scrypt (hash salgado); mínimo de 10 caracteres; não existe admin padrão (503 até criar).
+  OK [REAL] token JWT forjado (chave "changeme" e alg=none) rejeitado.
+  OK [REAL] cookie HttpOnly + SameSite; bloqueio após 8 falhas de login (429); CSRF por cabeçalho; CSP/nosniff/X-Frame.
+  OK [REAL] /api exige login; configurações validadas e chaves protegidas não editáveis.
+  OK [REAL] token do Instagram cifrado no banco (não aparece em texto puro no arquivo .db) e nunca em API/logs.
+  OK [REAL] upload: extensão, tipo real (ffprobe), limite de tamanho, declaração de autorização, nome seguro, sem lixo .part.
+  OK [REAL] backup: traversal de caminho bloqueado.
+  OK [REAL] .dockerignore (.env, data, *.db), container sem root, .env.example sem valores secretos.
+  OK [REAL] logs: redação de tokens/senhas (Bearer, access_token, password...).
+  NÃO TESTADO: HTTPS real com Caddy/Let's Encrypt (precisa de domínio público e Docker).
+
+------------------------------------------------------------------------------
+C. NÚCLEO, FILA, RETENTATIVAS, RECUPERAÇÃO (tests/test_core.py — 10 testes)
+------------------------------------------------------------------------------
+  OK backoff exponencial com jitter e teto; só repete erro temporário; falha permanente não consome tentativas;
+  "ainda não disponível" (VOD) reagenda sem consumir tentativa; esgotou => fila de falhas; retry pelo administrador;
+  deduplicação de jobs; recuperação de tarefas "running" após queda.
+  OK [REAL] servidor iniciado como PROCESSO, derrubado com kill -9 com um job "running", reiniciado: o job foi RECUPERADO e
+  as configurações persistiram.
+
+------------------------------------------------------------------------------
+D. MÍDIA / IA (tests/test_e2e_media.py — 12 testes) [SINT]
+------------------------------------------------------------------------------
+  OK clipe H.264/AAC, 9:16 exato, ≤1080x1920, 15–90 s, 0 faixas de legenda.
+  OK áudio normalizado (loudnorm: ~-16 LUFS, pico real ≤ -0,5 dBFS).
+  OK marca d'água: aparece só como @ pequeno no canto; nenhuma outra alteração relevante no quadro; versões
+     Instagram e TikTok diferentes; sem @ configurado => arquivo idêntico; opacidade 65% (alpha 165/255).
+  OK detecção: os eventos plantados (risada sintética em 40–44 s e grito em 80–83 s) caíram dentro dos clipes escolhidos.
+  OK qualidade > quantidade: nota mínima 101 => 0 clipes; nenhum clipe abaixo do limite.
+  OK blocos de 45 min com sobreposição de 2 min cobrem vídeos longos sem lacunas.
+  OK rastreio de rosto (detector FALSO injetado): rosto fica dentro do recorte, movimento ≤12% da largura/s; sem rosto => centro.
+  OK reprocessar o mesmo conteúdo não duplica clipes; deduplicação por impressão digital (não por nome+tamanho).
+
+------------------------------------------------------------------------------
+E. AGENDADOR, METAS, ESTOQUE, LIMPEZA, MOTOR (tests/test_scheduler_storage_engine.py — 20 testes)
+------------------------------------------------------------------------------
+  OK dia 00:00–23:59 no fuso configurado (America/Sao_Paulo), inclusive dia de 23 h com horário de verão.
+  OK plano: respeita máximo, intervalo mínimo (45 min), janela e nota mínima; idempotente.
+  OK sem "encher linguiça": com 2 clipes bons e meta 10, agenda 2.
+  OK meta máxima para PUBLICAÇÃO mas a PRODUÇÃO continua e o estoque cresce; novo dia libera.
+  OK ciclo diário devolve agendamentos vencidos ao estoque e reprograma.
+  OK clipes antigos têm bônus de prioridade; acervo antigo limitado por semana e nunca consecutivo.
+  OK aprendizado: inativo sem amostras (diz isso), ativo com 30 amostras reais (pesos mudam, soma 1); horários: prior
+     rotulado como suposição e substituído por dados reais.
+  OK Cleaner nunca apaga clipe não publicado/falho; só apaga clipe publicado em TODAS as redes; recusa caminhos fora
+     das pastas gerenciadas; detecta clipe corrompido (sha256); rotação de backups; pressão de disco libera só o seguro.
+  OK motor: tick cria monitores, executa ciclo diário, respeita pausa; monitor isola falha de um conector (Twitch sem
+     credencial não derruba YouTube); VOD de live entra 5–15 min depois; fonte sem declaração de autorização não adquire.
+  OK [SIM] botão TESTAR PROCESSAMENTO REAL: fonte (API falsa) + yt-dlp falso + TikTok falso => 1 clipe, descrição,
+     hashtags, envio privado (SELF_ONLY), original protegido; e sem fonte/conta o teste reporta "NÃO TESTADO/precisa correção".
+
+------------------------------------------------------------------------------
+F. O QUE NÃO FOI TESTADO / LIMITAÇÕES REAIS (leia!)
+------------------------------------------------------------------------------
+  NÃO VALIDADO  Publicação REAL no TikTok e no Instagram (sem credenciais/contas aqui). Lógica testada só com servidor simulado.
+  NÃO VALIDADO  Aquisição real por yt-dlp de YouTube/Twitch (sem rede de saída para esses sites aqui).
+  NÃO VALIDADO  Conectores Twitch e Instagram-como-fonte contra as APIs reais (código escrito; sem teste automatizado dedicado).
+  NÃO VALIDADO  Transcrição local (faster-whisper): não instalado neste ambiente. O código existe e é opcional; sem ele a
+                análise usa só áudio+visão. A parte semântica/lexical (semantic_score) NÃO foi exercitada.
+  NÃO VALIDADO  Detecção real de rostos: o OpenCV deste ambiente (5.0) veio sem o arquivo Haar; o sistema caiu corretamente no
+                enquadramento central. A lógica de rastreio foi testada com detector falso. No Docker (opencv-headless 4.x
+                pinado em requirements.txt) o Haar vem incluído — mas isso NÃO foi executado aqui.
+  NÃO VALIDADO  Qualidade editorial da IA em vídeos reais (somente sintéticos). Os estimadores de riso/grito/surpresa são
+                heurísticas de sinal; podem errar em conteúdo real. Ajuste "nota mínima" olhando os clipes na aba Clipes.
+  NÃO TESTADO   Docker (build/compose) e Caddy/HTTPS: não há daemon Docker neste ambiente. Os arquivos foram escritos e o
+                YAML validado, mas o build NUNCA foi executado. Possíveis ajustes de versão de pacotes em ARM (Oracle A1).
+  NÃO TESTADO   Instalação/uso do PWA em um Android real e o OAuth do TikTok no navegador. Verificados: manifest, ícones
+                PNG reais, service worker servido e rotas. O service worker nunca foi registrado por um navegador aqui.
+  NÃO TESTADO   Carga/concorrência alta e vídeos de horas (só blocos lógicos e vídeo de 2 min).
+  NÃO IMPLEMENTADO  YouTube Shorts como destino de publicação (só TikTok e Instagram); métricas de TikTok só existem para
+                posts públicos (app auditado); retenção só no Instagram (tempo médio assistido).

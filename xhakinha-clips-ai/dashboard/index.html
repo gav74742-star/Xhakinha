@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Xhakinha — Nuvens</title>
+<style>
+:root{--bg:#0f1115;--fg:#e8eaf0;--mut:#8b93a7;--card:#181b22;--ok:#3ecf8e;--warn:#f5b84a;--bad:#ef5b5b}
+@media (prefers-color-scheme:light){:root{--bg:#f4f5f8;--fg:#14161c;--mut:#5d6579;--card:#fff}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,sans-serif;padding:12px 16px 40px}
+h1{font-size:18px}h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:18px 0 6px}
+.c{background:var(--card);border-radius:10px;padding:10px 12px;margin:6px 0}.r{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.m{color:var(--mut);font-size:12px}
+input,button{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--mut);background:var(--card);color:var(--fg)}
+.bar{height:6px;background:#0003;border-radius:3px;margin-top:6px}.bar i{display:block;height:6px;border-radius:3px;background:var(--ok)}
+</style></head><body>
+<h1>Infraestrutura multi-cloud</h1>
+<div class="c" id="login"><div class="m">Cole o token de administrador (fica só neste aparelho). Painel somente leitura: ele mostra o estado; quem inicia o trabalho é o notebook que você abre/agenda.</div>
+<p><input id="tok" type="password" placeholder="ADMIN_TOKEN" autocomplete="off"> <button id="go">Entrar</button></p></div>
+<div id="app" hidden>
+<div class="m" id="upd"></div>
+<h2>Tarefas</h2><div class="c" id="counts"></div>
+<h2>Provedores (cotas são ESTIMATIVAS)</h2><div id="prov"></div>
+<h2>Executores</h2><div id="exe"></div>
+<h2>Tarefas ativas</h2><div id="tasks"></div>
+<h2>Locks</h2><div id="locks"></div>
+<h2>Eventos</h2><div id="ev"></div></div>
+<script>
+const $=id=>document.getElementById(id);let tok="";try{tok=localStorage.getItem("xhtok")||""}catch(e){}
+function row(parent,parts,cls){const d=document.createElement("div");d.className="c "+(cls||"");const r=document.createElement("div");r.className="r";parts.forEach(p=>{const s=document.createElement("span");s.textContent=p[0];if(p[1])s.className=p[1];r.appendChild(s)});d.appendChild(r);parent.appendChild(d);return d}
+const fmt=s=>s==null?"—":s>=3600?(s/3600).toFixed(1)+" h":Math.round(s/60)+" min";
+async function load(){
+ let r;try{r=await fetch("/api/state",{headers:{Authorization:"Bearer "+tok,"X-Requested-With":"XHK"},cache:"no-store"})}catch(e){$("upd").textContent="coordenador inacessível";return}
+ if(r.status==401){$("login").hidden=false;$("app").hidden=true;return}
+ const s=await r.json();$("login").hidden=true;$("app").hidden=false;
+ $("upd").textContent="atualizado "+new Date(s.now*1000).toLocaleTimeString("pt-BR");
+ $("counts").textContent=Object.entries(s.counts).map(([k,v])=>k+": "+v).join("  ·  ")||"fila vazia";
+ for(const id of["prov","exe","tasks","locks","ev"])$(id).replaceChildren();
+ s.providers.forEach(p=>{const d=row($("prov"),[[p.name],[p.breaker+(p.paused?" (pausado)":""),p.breaker==="open"||p.paused?"bad":p.breaker==="half_open"?"warn":"ok"]]);
+  const w=p.config.week_seconds,dd=p.config.day_seconds,lim=w||dd,used=w?p.usage_s.week:p.usage_s.day;
+  const m=document.createElement("div");m.className="m";m.textContent=(lim?"uso "+fmt(used)+" de ~"+fmt(lim*p.config.safety)+(w?"/semana":"/dia"):"sem teto semanal/diário configurado")+(p.uncertain?" · cota incerta":"");d.appendChild(m);
+  if(lim){const b=document.createElement("div");b.className="bar";const i=document.createElement("i");i.style.width=Math.min(100,100*used/(lim*p.config.safety))+"%";b.appendChild(i);d.appendChild(b)}});
+ s.executors.forEach(e=>row($("exe"),[[e.id],[e.status+" · visto há "+fmt(e.seen_ago_s)+" · resta "+fmt(e.time_left_s),e.status==="active"?"ok":"warn"]]));
+ s.tasks.forEach(t=>row($("tasks"),[[t.kind+" ("+t.id.slice(0,6)+")"],[t.status+(t.owner?" · "+t.owner:"")+" · tent. "+t.attempts,t.status==="dead"?"bad":""]]));
+ s.locks.forEach(l=>row($("locks"),[[l.name],[(l.owner||"livre")+" · fence "+l.fence]]));
+ s.events.slice(0,15).forEach(e=>row($("ev"),[[new Date(e.ts*1000).toLocaleTimeString("pt-BR")+" "+e.component],[e.message,e.level==="warn"?"warn":e.level==="error"?"bad":""]]));
+}
+$("go").onclick=()=>{tok=$("tok").value.trim();try{localStorage.setItem("xhtok",tok)}catch(e){}load()};
+load();setInterval(()=>{if(tok)load()},20000);
+</script></body></html>

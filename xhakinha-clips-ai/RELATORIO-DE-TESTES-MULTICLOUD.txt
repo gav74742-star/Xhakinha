@@ -1,0 +1,34 @@
+RELATÓRIO DE TESTES — FASE MULTI-CLOUD (14/11/2026)
+Resultado: 133 testes Python passaram (82 da fase 1 + 51 novos) em 5m42s; 5 testes Node passaram. Nenhuma falha pendente.
+
+ROTULAGEM (o que cada teste realmente exercita)
+[REAL]  executa de verdade, sem serviço externo: SQLite, threads, HTTP em localhost, ffmpeg/análise/render sobre vídeo SINTÉTICO.
+[SIM]   usa simulação: "Drive" = pasta local (LocalDirBackend) ou servidor HTTP falso que imita a API v3 (tests/fake_drive.py);
+        OAuth do Google falso; relógio controlado nos testes de lease/cota.
+[DEPENDE DE CREDENCIAIS/CONTA] NÃO executado aqui: Google Drive real, Kaggle real, Colab real, Cloudflare D1/Workers real,
+        GitHub Actions real, TikTok/Instagram reais.
+
+COBERTURA PEDIDA (Prompt B §11 / Prompt A §11)
+ 1 Dois executores na mesma tarefa .......... [REAL] 8 threads/1 tarefa => 1 vencedor (Python e Node)
+ 2 Interrupção do Kaggle .................... [REAL+relógio simulado] lease expira, reap, tarefa volta
+ 3 Recuperação no Colab ..................... [REAL análise/ffmpeg + SIM Drive] 2 pedaços reaproveitados, só o resto recalculado
+ 4 Falta de GPU ............................. [REAL] tarefa needs=gpu só vai a executor com GPU; healthcheck honesto
+ 5 Cota esgotada ............................ [REAL] não inicia se estimativa estoura; reserva p/ prioridade; novo período libera
+ 6 Falha de upload .......................... [SIM Drive] sem arquivo parcial; retentativa ok; corrupção detectada por MD5; 503 em chunk retomado
+ 7 Drive sem espaço ......................... [SIM] recusa sem tocar no existente; tarefa pausa o provedor; original intacto
+ 8 Repetição de tarefas ..................... [REAL] chave idempotente; complete duplicado barrado; clipes não duplicam
+ 9 Publicação interrompida .................. [REAL] sem o lock do cérebro a publicação é recusada ANTES de chamar a plataforma
+10 Recuperação de checkpoints ............... [REAL+SIM Drive] ver 3; checkpoint do coordenador sobrevive à troca de dono
+11 Inconsistência de banco .................. [REAL] reconcile repara/relata; snapshot corrompido cai p/ versão anterior; nunca inicia vazio
+12 Indisponibilidade de provedor ............ [REAL] circuit breaker abre/meia-abre/fecha; outro provedor segue funcionando
+Extras: lock distribuído com fencing; snapshot de cérebro antigo não supera o novo; manifesto só no fim; API HTTP (auth, 409);
+sessão completa do runner (cérebro cria snapshot, libera lock, 2ª sessão restaura); notebooks compilam; gatilho Kaggle decide certo;
+device-flow OAuth [SIM]; Worker JS contra SQLite [SIM do D1].
+
+O QUE NÃO FOI TESTADO (depende de você/contas)
+ - Execução dentro do Kaggle e do Colab; Secrets do Kaggle; `kaggle kernels push` real.
+ - Google Drive real (o cliente foi validado contra um servidor falso que eu escrevi; diferenças reais podem existir).
+ - Deploy do Worker em D1 real (wrangler); limites reais de Workers/D1.
+ - Publicação real TikTok/Instagram; Instagram sem URL pública NÃO resolvido.
+ - Transcrição Whisper e detecção de rostos (pacotes ausentes no sandbox; há fallback).
+ - Pesquisa: os domínios oficiais foram bloqueados no sandbox; parte dos limites vem de fontes secundárias (ver docs/PESQUISA-MULTICLOUD.md).

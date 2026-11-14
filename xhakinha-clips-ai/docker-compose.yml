@@ -1,0 +1,39 @@
+# Sobe: app (painel+motor) + Caddy (HTTPS automático e gratuito via Let's Encrypt).
+# Pré-requisito: .env criado por `python3 scripts/setup.py` com DOMAIN= e PUBLIC_BASE_URL=https://SEU-DOMINIO
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      HOST: 0.0.0.0
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - xh_data:/data
+    expose: ["8000"]
+  # Worker extra opcional (mais capacidade): docker compose --profile extra up -d --scale worker=2
+  worker:
+    build: .
+    profiles: ["extra"]
+    restart: unless-stopped
+    env_file: .env
+    environment: { DATA_DIR: /data }
+    command: ["python", "-m", "xhakinha.worker"]
+    volumes:
+      - xh_data:/data
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [app]
+volumes:
+  xh_data:
+  caddy_data:
+  caddy_config:
