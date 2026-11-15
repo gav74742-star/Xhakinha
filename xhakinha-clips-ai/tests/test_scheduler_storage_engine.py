@@ -85,7 +85,7 @@ def test_cap_stops_publishing_but_not_production_and_new_day_resumes(engine, set
 def test_daily_cycle_returns_stale_schedules_to_stock(engine, settings):
     db, tz = engine.db, settings.tz
     c = mk_clip(engine, 90)
-    yesterday = time.time() - 86400
+    yesterday = datetime(2026, 11, 13, 23, 55, tzinfo=tz).timestamp()
     db.x("INSERT INTO publications(clip_id,platform,status,scheduled_at,created,updated) VALUES(?,?,?,?,?,?)", (c, "tiktok", "scheduled", yesterday, yesterday, yesterday))
     scheduler.refresh_clip_status(db, c)
     r = scheduler.daily_cycle(db, tz, datetime(2026, 11, 14, 0, 5, tzinfo=tz).timestamp())
