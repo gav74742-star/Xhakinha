@@ -347,7 +347,9 @@ def test_cerebro_sincroniza_ingere_remoto_e_so_publica_com_lock(settings, ldrive
     assert clips and all(Path(x["path"]).is_file() and sha256_file(Path(x["path"])) == x["sha256"] for x in clips)
     eng.pl.h_process(job)                                                            # repetição: idempotente
     assert len(eng.db.q("SELECT id FROM clips WHERE content_id=?", (cid,))) == len(clips)
-    assert brain.sync_files() >= 1 and ldrive.stat(f"originals/{fp}.mp4")
+    assert brain.sync_files() == 0 and ldrive.stat(f"originals/{fp}.mp4")                 # nada a reenviar: sem cópias duplicadas
+    assert all(x["drive_path"] and ldrive.stat(x["drive_path"]) for x in eng.db.q("SELECT drive_path FROM clips WHERE content_id=?", (cid,)))
+    assert not [f for f in ldrive.listdir("clips/pending") if "/clip_" in f["path"]]
     meta = brain.snapshot(); assert meta and meta["counts"]["clips"] == len(clips)
     # publicação interrompida: perde o lock → h_publish recusa ANTES de chamar a plataforma
     called = []

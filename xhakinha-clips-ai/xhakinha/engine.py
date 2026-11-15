@@ -139,7 +139,7 @@ class Engine:
         if self.state() != "running":
             return
         # monitores (um por fonte, respeitando intervalo e backoff gravado em last_check)
-        if self.db.get("monitor_enabled"):
+        if self.db.get("monitor_enabled") and not self.db.get("ingest_paused"):
             for src in self.db.q("SELECT * FROM sources WHERE enabled=1 AND platform NOT IN ('url','upload')"):
                 if now - (src["last_check"] or 0) >= src["interval_s"]:
                     self.q.enqueue("monitor", {"source_id": src["id"]}, dedupe_key=f"monitor:{src['id']}", priority=1, max_attempts=1)
@@ -154,7 +154,8 @@ class Engine:
         # publicações vencidas
         for p in scheduler.due(self.db, now):
             self.q.enqueue("publish", {"pub_id": p["id"]}, dedupe_key=f"pub:{p['id']}", priority=2, max_attempts=12)
-        self.plan_archive(now)
+        if not self.db.get("ingest_paused"):
+            self.plan_archive(now)
         if self._every("cleanup", 900):
             self.q.enqueue("cleanup", dedupe_key="cleanup", max_attempts=2, priority=9)
         if self._every("backup", float(self.db.get("backup_every_h")) * 3600):

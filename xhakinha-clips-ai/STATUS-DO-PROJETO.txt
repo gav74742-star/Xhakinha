@@ -62,3 +62,7 @@ PENDENTE / RISCOS: Instagram (URL pública sem servidor); validação em contas 
 publicação; cotas são estimativas; Colab só manual; Actions só leve (política de uso).
 Documentos: TUTORIAL-ANDROID-MULTICLOUD.txt, KAGGLE_SETUP.txt, docs/PESQUISA-MULTICLOUD.md, docs/ARQUITETURA-MULTICLOUD.md,
 RELATORIO-DE-TESTES-MULTICLOUD.txt. (TUTORIAL-INSTALACAO.txt descreve a arquitetura antiga Oracle/Docker.)
+
+==== FASE 3 (14/11/2026) ====
+Corrigido e testado (simulação): reidratação de clipes, ingest_paused efetivo, diário anti-duplicação entre sessões, TikTok sem reenvio,
+snapshot sem credenciais temporárias. Veja RELATORIO-FASE3.txt. Pendente: Instagram (URL pública), conexão de contas na nuvem, painel de links.

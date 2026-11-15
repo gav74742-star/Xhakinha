@@ -84,6 +84,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "backup_every_h": 12, "backup_keep": 14,
     "youtube_monitor_interval_s": 300,
     "monitor_enabled": 1, "bypass_none": 1,
+    # controle de armazenamento no Drive (nuvem): pausa NOVAS ingestões, nunca publicações
+    "ingest_paused": 0, "ingest_paused_reason": "", "drive_min_free_gb": 1.5, "drive_resume_free_gb": 2.5,
 }
 
 
@@ -114,6 +116,11 @@ class Store:
 
     def _init(self) -> None:
         self.conn.executescript(SCHEMA)
+        # migrações aditivas (bancos/snapshots antigos continuam válidos)
+        for tbl, col in (("clips", "drive_path"), ("contents", "drive_path")):
+            cols = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
+            if col not in cols:
+                self.conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT")
 
     def q(self, sql: str, args: Iterable = ()) -> list[dict]:
         return [dict(r) for r in self.conn.execute(sql, tuple(args)).fetchall()]

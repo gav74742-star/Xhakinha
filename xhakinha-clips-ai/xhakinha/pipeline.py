@@ -28,6 +28,11 @@ class Pipeline:
         self.cleaner = Cleaner(st)
         self.pubs = publishers or {"tiktok": TikTokPublisher(s, db), "instagram": InstagramPublisher(s, db)}
         self.detector = analysis.haar_faces          # injetável nos testes
+        self.clip_fetcher = None                     # nuvem: callable(clip)->"present|restored|retry|missing|corrupt|no_drive_copy"
+
+    def ingest_paused(self) -> bool:
+        """True quando o armazenamento (Drive) está no limite: NOVAS ingestões param; publicações e clipes já em estoque seguem."""
+        return bool(self.db.get("ingest_paused"))
 
     def handle(self, job: dict):
         fn = getattr(self, "h_" + job["type"], None)
@@ -38,7 +43,7 @@ class Pipeline:
     # ------------------------------------------------------------ monitor
     def h_monitor(self, job: dict):
         src = self.db.one("SELECT * FROM sources WHERE id=?", (job["payload"]["source_id"],))
-        if not src or not src["enabled"]:
+        if not src or not src["enabled"] or self.ingest_paused():
             return
         now = time.time()
         try:
@@ -98,6 +103,8 @@ class Pipeline:
         src = self.db.one("SELECT * FROM sources WHERE id=?", (job["payload"]["source_id"],))
         if not src or not src["enabled"]:
             return
+        if self.ingest_paused():
+            raise NotReadyYet("ingestão pausada (armazenamento no limite)", retry_after=1800)
         conn = make_connector(src, self.s, self.db)
         page, found, pages = job["payload"].get("page"), 0, 0
         while pages < 10:
@@ -131,6 +138,8 @@ class Pipeline:
                 return
             except PermanentError:
                 pass
+        if self.ingest_paused():
+            raise NotReadyYet("ingestão pausada (armazenamento no limite); download adiado, nada foi apagado", retry_after=1800)
         if not self.st.has_space(500 * 1024 * 1024):
             self.cleaner.enforce_disk()
             if not self.st.has_space(500 * 1024 * 1024):
@@ -221,6 +230,11 @@ class Pipeline:
     def prepare_platform_file(self, pub: dict, clip: dict) -> Path:
         if pub.get("file_path") and Path(pub["file_path"]).is_file():
             return Path(pub["file_path"])
+        if self.clip_fetcher and (not clip.get("path") or not Path(clip["path"]).is_file()):
+            r = self.clip_fetcher(clip)                       # reidrata do Drive (hash conferido); preserva ids e registros
+            if r == "retry":
+                raise TransientError("clipe sendo recuperado do Drive; nova tentativa em breve", retry_after=120)
+            clip.update(self.db.one("SELECT * FROM clips WHERE id=?", (clip["id"],)))
         if not clip.get("path") or not self.st.verify_clip(clip):
             self.db.x("UPDATE clips SET error='arquivo do clipe ausente/corrompido' WHERE id=?", (clip["id"],))
             raise PermanentError("arquivo do clipe ausente ou corrompido (verificação de integridade)")

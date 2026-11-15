@@ -1,0 +1,38 @@
+RELATÓRIO — FASE 3: RECUPERAÇÃO E CONFIABILIDADE (14/11/2026)
+Resultado: 148 testes Python passaram (133 anteriores + 15 novos), 0 falhas. Node/Cloudflare: não alterado (5 testes da fase 2 seguem válidos).
+
+ARQUIVOS MODIFICADOS
+ xhakinha/db.py                 migração aditiva drive_path (clips/contents) + settings de armazenamento
+ xhakinha/pipeline.py           ingest_paused (monitor/acervo/aquisição), clip_fetcher em prepare_platform_file
+ xhakinha/engine.py             tick não agenda monitor/acervo com ingestão pausada
+ xhakinha/publish/tiktok.py     upload_started (não reenvia após queda), limite de 1 h, upload_url sem persistir
+ xhakinha/cloud/brain.py        rehydrate_clip/pending, check_storage, sync sem duplicar, diário, sanitização do snapshot
+ xhakinha/cloud/snapshots.py    sanitize(), nome com milissegundos (bug de colisão corrigido)
+ARQUIVOS NOVOS
+ xhakinha/cloud/journal.py      diário de publicações no Drive + reconciliação
+ tests/test_cloud_sessions.py   15 testes entre sessões
+ docs/FASE3-RECUPERACAO-CONFIABILIDADE.md
+Ajuste de teste existente: tests/test_cloud_drive_brain.py (agora afirma que NÃO há reenvio/duplicata).
+
+TESTES (rótulo: REAL = nosso código executado de verdade; SIM = Drive em pasta local e TikTok em servidor falso)
+ Cenário pedido: processar → enviar ao Drive → sessão cai → outra sessão → clipe recuperado (hash conferido, mesmo id, sem
+   reenvio) → publicação retomada → nova queda no meio → terceira sessão conclui: 1 init, 1 upload, 1 post .......... PASSOU
+ Publicação concluída antes da queda (snapshot defasado) não é refeita (diário) ................................... PASSOU
+ Falha temporária (Drive fora) durante a publicação: passo irreversível não ocorre; retoma sem duplicar ............ PASSOU
+ Upload TikTok iniciado antes da queda não reenvia o arquivo ................................................... PASSOU
+ Erro permanente => failed + needs_admin, 1 tentativa; erro temporário => para no limite de tentativas (dead) .......... PASSOU
+ Download falha agora => espera (não vira falha permanente) e publica depois ..................................... PASSOU
+ Cópia do Drive corrompida => não publica, nada ruim no disco, needs_admin ...................................... PASSOU
+ Clipe ausente no Drive / nunca enviado => reportado com mensagem clara ........................................ PASSOU
+ Ingestão pausa (Drive no limite), publicação continua, histerese, pausa manual preservada ........................ PASSOU
+ Drive cheio no upload => pausa sem apagar, recuo de 15 min, publicação segue ................................... PASSOU
+ Tokens/upload_url fora do snapshot, do diário e dos eventos; sessão nova ainda lê o token ......................... PASSOU
+ Job 'running' de sessão morta volta à fila; banco antigo é migrado .............................................. PASSOU
+
+AINDA DEPENDE DE VALIDAÇÃO EXTERNA / NÃO FEITO
+ - Google Drive real, Kaggle real, TikTok/Instagram reais (tudo acima usa simulação).
+ - Comportamento real do TikTok com upload interrompido; o limite de 1 h é uma escolha conservadora minha, não doc oficial.
+ - Instagram sem URL pública; publicação real não implementada (fora do escopo pedido).
+ - Conexão de contas TikTok/Instagram na nuvem (OAuth/dispositivo): não implementado; suporte oficial de device flow não verificado.
+ - Clipe que nunca chegou ao Drive antes da queda não é regenerado automaticamente.
+ - Painel Cloudflare ainda não mostra publicações/links.

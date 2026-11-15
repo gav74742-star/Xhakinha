@@ -72,6 +72,9 @@ class TikTokPublisher(Publisher):
         st = self.state(pub)
         stage = st.get("stage", "init")
         path = Path(pub["file_path"] or "")
+        if stage == "upload" and not st.get("upload_url") and not st.get("upload_started"):
+            st.update(stage="init")                       # url assinada não sobrevive a snapshot/restauração: init de novo (nada foi enviado)
+            stage = "init"
         if stage in ("init", "upload") and not path.is_file():
             raise PermanentError("arquivo da publicação ausente (será regenerado do clipe)")
         if stage == "init":
@@ -91,25 +94,35 @@ class TikTokPublisher(Publisher):
             st.update(stage="upload", publish_id=d["publish_id"], upload_url=d["upload_url"], privacy=privacy)
             self.save(pub, st, remote_id=d["publish_id"], status="uploading", visibility=privacy)
             stage = "upload"
+        if stage == "upload" and st.get("upload_started"):
+            # a sessão anterior pode ter enviado o arquivo antes de cair: NÃO reenviar (evita post duplicado); só acompanha o status
+            st["stage"] = "poll"
+            self.save(pub, st, status="processing")
+            stage = "poll"
         if stage == "upload":
             size = path.stat().st_size
+            st["upload_started"] = time.time()
+            self.save(pub, st)                                   # registrado (e gravado no Drive) ANTES do envio irreversível
             with open(path, "rb") as f:
                 r = http.request("PUT", st["upload_url"], data=f, timeout=600, headers={
                     "Content-Type": "video/mp4", "Content-Length": str(size), "Content-Range": f"bytes 0-{size - 1}/{size}"})
             if r.status_code not in (200, 201, 206):
                 if r.status_code in (403, 404, 410):      # upload_url expirou: nada foi publicado ainda -> reinicia
-                    st = {"stage": "init", "caption": st.get("caption"), "reinit": st.get("reinit", 0) + 1}
+                    st = {"stage": "init", "caption": st.get("caption"), "reinit": st.get("reinit", 0) + 1}   # upload_started limpo
                     if st["reinit"] > 2:
                         raise PermanentError(f"upload recusado repetidamente (HTTP {r.status_code})")
                     self.save(pub, st)
                     raise TransientError(f"upload_url expirada (HTTP {r.status_code}); reiniciando init")
                 raise TransientError(f"upload HTTP {r.status_code}")
             st["stage"] = "poll"
+            st.pop("upload_url", None)                   # credencial temporária: não precisa mais
             self.save(pub, st, status="processing")
         # poll
         d = self._call("/v2/post/publish/status/fetch/", {"publish_id": st["publish_id"]})
         status = d.get("status", "")
         if status in ("PROCESSING_UPLOAD", "PROCESSING_DOWNLOAD"):
+            if st.get("upload_started") and time.time() - st["upload_started"] > 3600:
+                raise PermanentError("TikTok ainda em processamento após 1h; resultado incerto. Verifique no app antes de reenviar (evita duplicar).")
             return StepResult("wait", 45, status)
         if status == "SEND_TO_USER_INBOX":
             self.save(pub, st, status="awaiting_confirmation", needs_admin=1, error="Enviado como rascunho para a caixa do TikTok; publique no app.")
@@ -128,6 +141,7 @@ class TikTokPublisher(Publisher):
             reason = d.get("fail_reason", "")
             if reason == "internal":
                 st.update(stage="init")
+                st.pop("upload_started", None)
                 self.save(pub, st)
                 raise TransientError("TikTok FAILED: internal (retentável) — nada foi publicado")
             raise PermanentError(f"TikTok FAILED: {reason}")

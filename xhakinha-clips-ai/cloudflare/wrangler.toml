@@ -5,7 +5,7 @@ compatibility_date = "2026-01-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "xhakinha"
-database_id = "COLE-AQUI-O-ID-DO-D1"
+database_id = "3fea46a4-897c-438f-a34b-1f720730c80f"
 
 [triggers]
 crons = ["*/5 * * * *"]

@@ -1,0 +1,30 @@
+name: deploy-cloudflare
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'xhakinha-clips-ai/cloudflare/**'
+      - 'xhakinha-clips-ai/dashboard/**'
+      - '.github/workflows/cloudflare-deploy.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy Cloudflare Worker
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: xhakinha-clips-ai/cloudflare
+          wranglerVersion: "4"
+          command: deploy

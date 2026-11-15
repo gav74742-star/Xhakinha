@@ -38,14 +38,25 @@ class SnapshotManager:
         self.tmp.mkdir(parents=True, exist_ok=True)
 
     def create(self, conn: sqlite3.Connection, epoch: int, *, still_owner: Callable[[], bool] | None = None,
-               tables: tuple[str, ...] = ("contents", "clips", "publications")) -> dict:
-        ts = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
+               tables: tuple[str, ...] = ("contents", "clips", "publications"),
+               sanitize: Callable[[sqlite3.Connection], None] | None = None) -> dict:
+        now = time.time()
+        ts = time.strftime("%Y%m%dT%H%M%S", time.gmtime(now)) + f"{int(now * 1000) % 1000:03d}"      # ms: dois snapshots no mesmo segundo não colidem
         copy = self.tmp / f"snap-{ts}-e{epoch}.sqlite"
         dst = sqlite3.connect(str(copy))
         try:
             conn.backup(dst)                 # cópia consistente, sem parar escritas
         finally:
             dst.close()
+        if sanitize:                                  # remove credenciais temporárias da CÓPIA (o banco vivo não muda)
+            c = sqlite3.connect(str(copy))
+            try:
+                c.execute("PRAGMA secure_delete=ON")
+                sanitize(c)
+                c.commit()
+                c.execute("VACUUM")                   # não deixa resíduo dos valores removidos nas páginas livres
+            finally:
+                c.close()
         if not _integrity(copy):
             copy.unlink(missing_ok=True)
             raise CorruptState("snapshot local falhou no integrity_check; NÃO enviado")
