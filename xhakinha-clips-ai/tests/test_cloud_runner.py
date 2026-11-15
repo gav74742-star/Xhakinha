@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_notebooks_sao_json_valido_e_celulas_de_codigo_compilam():
-    for nbp in ("notebooks/kaggle_worker.ipynb", "notebooks/colab_worker.ipynb"):
+    for nbp in ("kaggle/kaggle_worker.ipynb", "notebooks/colab_worker.ipynb"):
         nb = json.loads((ROOT / nbp).read_text())
         assert nb["nbformat"] == 4
         for c in nb["cells"]:
@@ -32,7 +32,6 @@ def test_notebooks_sao_json_valido_e_celulas_de_codigo_compilam():
                 compile("".join(c["source"]), nbp, "exec")
     meta = json.loads((ROOT / "kaggle/kernel-metadata.json").read_text())
     assert meta["code_file"] == "kaggle_worker.ipynb" and meta["enable_internet"] == "true" and meta["is_private"] == "true"
-    assert (ROOT / "kaggle/kaggle_worker.ipynb").read_text() == (ROOT / "notebooks/kaggle_worker.ipynb").read_text()
 
 
 def test_provedor_detectado_pelo_ambiente():
