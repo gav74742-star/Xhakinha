@@ -6,7 +6,7 @@ Pillow
 PyJWT
 cryptography
 psutil
+libsql
 python-multipart
 yt-dlp
 faster-whisper
-av>=11,<19

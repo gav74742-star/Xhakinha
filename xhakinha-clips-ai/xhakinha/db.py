@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -14,6 +15,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from . import dbdriver
 from .config import Settings, redact
 
 SCHEMA = """
@@ -89,9 +91,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
+SCHEMA_VERSION = 3          # 3 = colunas drive_path (clips/contents). Sobe quando o esquema mudar.
+DBError = (sqlite3.Error, dbdriver.DbUnavailable)
+
+
 class Store:
     def __init__(self, settings: Settings):
         self.s = settings
+        self.backend = "turso" if settings.use_turso else "sqlite"
         self._local = threading.local()
         settings.ensure_dirs()
         self._init()
@@ -101,26 +108,97 @@ class Store:
 
     # conexão -----------------------------------------------------------
     @property
-    def conn(self) -> sqlite3.Connection:
+    def conn(self):
         c = getattr(self._local, "c", None)
         if c is None:
-            c = sqlite3.connect(str(self.s.db_path), timeout=30, isolation_level=None,
-                                check_same_thread=False)
-            c.row_factory = sqlite3.Row
-            c.execute("PRAGMA journal_mode=WAL")
-            c.execute("PRAGMA busy_timeout=30000")
-            c.execute("PRAGMA foreign_keys=ON")
-            c.execute("PRAGMA synchronous=NORMAL")
+            if self.backend == "turso":
+                c = dbdriver.LibsqlConn(self.s.turso_url, self.s.turso_token)
+            else:
+                c = dbdriver.open_sqlite(str(self.s.db_path))
             self._local.c = c
         return c
 
-    def _init(self) -> None:
-        self.conn.executescript(SCHEMA)
-        # migrações aditivas (bancos/snapshots antigos continuam válidos)
+    def _columns(self, table: str) -> set[str]:
+        return {r["name"] for r in self.conn.execute(f"SELECT name FROM pragma_table_info('{table}')").fetchall()}
+
+    def _migrate(self) -> None:
         for tbl, col in (("clips", "drive_path"), ("contents", "drive_path")):
-            cols = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({tbl})").fetchall()}
-            if col not in cols:
+            if col not in self._columns(tbl):
                 self.conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT")
+
+    def _init(self) -> None:
+        if self.backend == "sqlite":
+            self.conn.executescript(SCHEMA)
+            self._migrate()                                   # bancos/snapshots antigos continuam válidos
+            return
+        # Turso: o esquema só é CRIADO de propósito (scripts/turso_migrate.py init ou XH_TURSO_INIT=1), nunca por acidente.
+        has = self.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'").fetchone()
+        if not has:
+            if os.environ.get("XH_TURSO_INIT") != "1":
+                from .config import ConfigError
+                raise ConfigError("O banco Turso ainda não tem o esquema do Xhakinha. Rode UMA vez: "
+                                  "python scripts/turso_migrate.py init   (ele cria as tabelas de forma controlada)")
+            self.conn.executescript(SCHEMA)
+        ver = self.conn.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone() if has else None
+        cur = int(json.loads(ver["value"])) if ver else 0
+        if cur < SCHEMA_VERSION:                              # só escreve quando o esquema realmente subiu
+            self.conn.executescript(SCHEMA)
+            self._migrate()
+            self.conn.execute("INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                              (json.dumps(SCHEMA_VERSION),))
+
+    def backup_source(self):
+        """Objeto com .backup(dst_sqlite_conn) para o gerador de snapshots (SQLite: a própria conexão; Turso: exportação lógica)."""
+        if self.backend == "sqlite":
+            return self.conn
+        store = self
+
+        class _Src:
+            def backup(self, dst):
+                import tempfile
+                fd, tmp = tempfile.mkstemp(suffix=".sqlite")
+                os.close(fd)
+                try:
+                    store.export_sqlite(tmp)
+                    src = sqlite3.connect(tmp)
+                    try:
+                        src.backup(dst)
+                    finally:
+                        src.close()
+                finally:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+        return _Src()
+
+    def export_sqlite(self, dest) -> None:
+        """Gera um arquivo SQLite local com o conteúdo atual (backup/snapshot). No SQLite usa a API de backup (consistente);
+        no Turso é uma cópia lógica tabela a tabela (NÃO transacional entre tabelas)."""
+        dest = str(dest)
+        if self.backend == "sqlite":
+            dst = sqlite3.connect(dest)
+            try:
+                self.conn.backup(dst)
+            finally:
+                dst.close()
+            return
+        dst = sqlite3.connect(dest)
+        try:
+            dst.executescript(SCHEMA)
+            names = [r["name"] for r in self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+            for t in names:
+                have = {r[1] for r in dst.execute(f"PRAGMA table_info({t})").fetchall()}
+                if not have:
+                    continue
+                cur = self.conn.execute(f"SELECT * FROM {t}")
+                for r in cur.fetchall():
+                    cols = [k for k in r.keys() if k in have]
+                    dst.execute(f"INSERT OR REPLACE INTO {t}({','.join(cols)}) VALUES({','.join('?' * len(cols))})", [r[k] for k in cols])
+            dst.commit()
+        finally:
+            dst.close()
 
     def q(self, sql: str, args: Iterable = ()) -> list[dict]:
         return [dict(r) for r in self.conn.execute(sql, tuple(args)).fetchall()]
@@ -135,6 +213,9 @@ class Store:
 
     @contextlib.contextmanager
     def tx(self):
+        """Transação interativa: SOMENTE SQLite local. No Turso use um único comando atômico (UPDATE ... RETURNING / upsert)."""
+        if self.backend != "sqlite":
+            raise NotImplementedError("transação interativa não é suportada no Turso; use comandos atômicos")
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             yield self.conn
@@ -184,7 +265,7 @@ class Store:
         try:
             self.x("INSERT INTO events(ts,level,component,message,ctx) VALUES(?,?,?,?,?)",
                    (time.time(), level, component, redact(message)[:2000], redact(json.dumps(ctx, default=str))[:2000]))
-        except sqlite3.Error:
+        except Exception:          # log nunca derruba o fluxo (SQLite, Turso fora do ar, erro do cliente libsql)
             pass
 
     def attempt(self, ref_type: str, ref_id: int, op: str, ok: bool, message: str = "") -> None:

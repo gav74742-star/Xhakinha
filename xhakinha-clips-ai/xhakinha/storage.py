@@ -7,7 +7,6 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
-import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
@@ -120,12 +119,7 @@ class Storage:
     def backup_db(self) -> Path:
         self.s.backup_dir.mkdir(parents=True, exist_ok=True)
         dest = self.s.backup_dir / f"xhakinha-{datetime.now(self.s.tz).strftime('%Y%m%d-%H%M%S')}.db"
-        src = self.db.conn
-        dst = sqlite3.connect(str(dest))
-        try:
-            src.backup(dst)
-        finally:
-            dst.close()
+        self.db.export_sqlite(dest)
         keep = int(self.db.get("backup_keep", 14))
         files = sorted(self.s.backup_dir.glob("xhakinha-*.db"))
         for old in files[:-keep]:

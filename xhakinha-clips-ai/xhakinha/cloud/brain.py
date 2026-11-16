@@ -63,7 +63,12 @@ class Brain:
     def prepare(self) -> None:
         self.s.ensure_dirs()
         self.drive.ensure_layout()
-        m = self.snaps.restore_latest(self.s.db_path)             # CorruptState => aborta: nunca inicia "vazio" por cima
+        if self.s.use_turso:
+            # Turso é a fonte canônica: NUNCA restaurar snapshot antigo por cima de dados novos. Snapshots do Drive = só backup.
+            m = None
+            self.report["state_backend"] = "turso"
+        else:
+            m = self.snaps.restore_latest(self.s.db_path)         # CorruptState => aborta: nunca inicia "vazio" por cima
         self.report["restored"] = m["file"] if m else None
         if self.engine is None:
             self.engine = Engine(self.s)
@@ -85,7 +90,7 @@ class Brain:
     def snapshot(self) -> dict | None:
         if not self.still_owner():
             return None
-        meta = self.snaps.create(self.engine.db.conn, self.fence, still_owner=self.still_owner, sanitize=self._sanitize)
+        meta = self.snaps.create(self.engine.db.backup_source(), self.fence, still_owner=self.still_owner, sanitize=self._sanitize)
         self.report["snapshots"] += 1
         try:
             self.snaps.prune(keep=12)

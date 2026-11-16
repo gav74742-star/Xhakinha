@@ -104,7 +104,11 @@ def test_no_secret_leaks_in_api_db_or_logs(server, admin, engine, fake):
     engine.db.event("info", "t", "Authorization: Bearer SUPERSECRETIGTOKEN123 access_token=SUPERSECRETIGTOKEN123")
     for p in ("/api/accounts", "/api/settings", "/api/status", "/api/logs", "/api/attempts"):
         assert "SUPERSECRETIGTOKEN123" not in admin.get(server + p).text, p
-    raw = open(engine.s.db_path, "rb").read()
+    dbfile = engine.s.db_path
+    if engine.s.use_turso:                       # banco remoto (fake): inspeciona uma exportação completa
+        dbfile = engine.s.data_dir / "inspect-export.db"
+        engine.db.export_sqlite(dbfile)
+    raw = open(dbfile, "rb").read()
     assert b"SUPERSECRETIGTOKEN123" not in raw                      # token cifrado em repouso (Fernet)
     assert engine.db.get_secret("account:instagram")["access_token"] == "SUPERSECRETIGTOKEN123"
 

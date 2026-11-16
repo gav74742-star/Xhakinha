@@ -28,18 +28,22 @@ class Quota:
         return r["used"] if r else 0
 
     def charge(self, units: int, now: float | None = None) -> None:
-        day = self._day(now)
-        with self.db.tx() as c:
-            row = c.execute("SELECT used, exhausted_until FROM quota WHERE day=? AND api=?", (day, self.api)).fetchone()
-            used = row["used"] if row else 0
-            ex = row["exhausted_until"] if row else None
-            if ex and (now or time.time()) < ex:
-                raise QuotaExceeded(f"cota {self.api} esgotada até o reset", retry_after=max(60, ex - (now or time.time())))
-            if used + units > self.limit:
-                raise QuotaExceeded(f"cota própria {self.api} atingida ({used}/{self.limit})",
-                                    retry_after=max(60, self._next_reset(now) - (now or time.time())))
-            c.execute("INSERT INTO quota(day,api,used) VALUES(?,?,?) ON CONFLICT(day,api) DO UPDATE SET used=used+?",
-                      (day, self.api, units, units))
+        day, t = self._day(now), (now or time.time())
+        if units <= self.limit:
+            # débito atômico em UM comando (sem transação interativa): só soma se couber no limite e não estiver esgotada
+            n = self.db.conn.execute(
+                "INSERT INTO quota(day,api,used) VALUES(?,?,?) ON CONFLICT(day,api) DO UPDATE SET used=used+? "
+                "WHERE used+?<=? AND (exhausted_until IS NULL OR exhausted_until<=?)",
+                (day, self.api, units, units, units, self.limit, t)).rowcount
+            if n:
+                return
+        row = self.db.one("SELECT used, exhausted_until FROM quota WHERE day=? AND api=?", (day, self.api))
+        used = row["used"] if row else 0
+        ex = row["exhausted_until"] if row else None
+        if ex and t < ex:
+            raise QuotaExceeded(f"cota {self.api} esgotada até o reset", retry_after=max(60, ex - t))
+        raise QuotaExceeded(f"cota própria {self.api} atingida ({used}/{self.limit})",
+                            retry_after=max(60, self._next_reset(now) - t))
 
     def mark_exhausted(self, now: float | None = None) -> None:
         """Chamado quando a API responde 403 quotaExceeded: bloqueia até o reset real."""
