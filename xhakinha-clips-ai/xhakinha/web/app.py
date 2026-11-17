@@ -502,7 +502,16 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
         return FileResponse(p["file_path"], media_type="video/mp4")
 
     async def health(request: Request):
-        return J({"ok": True})
+        try:
+            version = db.get("schema_version")
+            return J({
+                "ok": True,
+                "database": "ok",
+                "backend": db.backend,
+                "schema_version": version,
+            })
+        except Exception:
+            return J({"ok": False, "database": "error"}, 503)
 
     async def index(request: Request):
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
