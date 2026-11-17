@@ -358,3 +358,134 @@ def test_cerebro_sincroniza_ingere_remoto_e_so_publica_com_lock(settings, ldrive
         eng.pl.h_publish({"payload": {"publication_id": 1}, "type": "publish"})
     assert not called and brain.fenced.is_set()
     assert brain.snapshot() is None                                                  # sem lock, sem snapshot
+
+
+
+# TESTES DE RECUPERACAO DE ORIGINAIS - XHAKINHA
+
+def _setup_original_recovery(settings, ldrive, synth_video):
+    """Prepara Brain, conteúdo e cópia remota usando somente Drive local de teste."""
+    from conftest import make_content
+    from xhakinha.cloud.brain import Brain
+    from xhakinha.cloud.coordinator import Coordinator
+
+    co = Coordinator(":memory:")
+    client = LocalClient(co)
+    brain = Brain(settings, ldrive, client, "rehydrate-test")
+
+    assert brain.acquire()
+    brain.prepare()
+
+    cid = make_content(brain.engine, synth_video)
+    content = brain.engine.db.one(
+        "SELECT * FROM contents WHERE id=?", (cid,)
+    )
+
+    fingerprint = content["fingerprint"]
+    drive_path = f"originals/{fingerprint[:32]}.mp4"
+
+    local_original = Path(content["local_path"])
+    ldrive.upload(local_original, drive_path)
+    local_original.unlink(missing_ok=True)
+
+    brain.engine.db.x(
+        "UPDATE contents SET drive_path=?, local_path=NULL WHERE id=?",
+        (drive_path, cid),
+    )
+
+    content = dict(brain.engine.db.one(
+        "SELECT * FROM contents WHERE id=?", (cid,)
+    ))
+
+    return brain, content, drive_path
+
+
+def test_rehydrate_original_restauracao_com_fingerprint(
+    settings, ldrive, synth_video
+):
+    brain, content, drive_path = _setup_original_recovery(
+        settings, ldrive, synth_video
+    )
+
+    result = brain.rehydrate_original(content)
+
+    assert result == "restored"
+
+    restored = brain.engine.db.one(
+        "SELECT local_path, drive_path, fingerprint FROM contents WHERE id=?",
+        (content["id"],),
+    )
+
+    from xhakinha.storage import quick_fingerprint
+
+    path = Path(restored["local_path"])
+    assert path.is_file()
+    assert restored["drive_path"] == drive_path
+    assert quick_fingerprint(path, content["duration"]) == content["fingerprint"]
+    assert brain.report["originals_rehydrated"] == 1
+
+
+def test_rehydrate_original_arquivo_ausente_no_drive(
+    settings, ldrive, synth_video
+):
+    brain, content, drive_path = _setup_original_recovery(
+        settings, ldrive, synth_video
+    )
+
+    remote_path = ldrive.root / drive_path
+    assert remote_path.is_file()
+    remote_path.unlink()
+
+    result = brain.rehydrate_original(content)
+
+    assert result == "missing"
+    assert not Path(brain.engine.st.download_path(content["id"], "mp4")).exists()
+
+    saved = brain.engine.db.one(
+        "SELECT local_path FROM contents WHERE id=?", (content["id"],)
+    )
+    assert saved["local_path"] is None
+
+
+def test_rehydrate_original_rejeita_arquivo_corrompido(
+    settings, ldrive, synth_video
+):
+    brain, content, drive_path = _setup_original_recovery(
+        settings, ldrive, synth_video
+    )
+
+    remote_path = ldrive.root / drive_path
+    remote_path.write_bytes(b"arquivo corrompido propositalmente")
+
+    result = brain.rehydrate_original(content)
+
+    assert result == "corrupt"
+    assert not Path(brain.engine.st.download_path(content["id"], "mp4")).exists()
+
+    saved = brain.engine.db.one(
+        "SELECT local_path FROM contents WHERE id=?", (content["id"],)
+    )
+    assert saved["local_path"] is None
+
+
+def test_rehydrate_original_sem_espaco_local_tenta_novamente(
+    settings, ldrive, synth_video, monkeypatch
+):
+    brain, content, drive_path = _setup_original_recovery(
+        settings, ldrive, synth_video
+    )
+
+    monkeypatch.setattr(
+        brain.engine.st, "has_space", lambda required=0: False
+    )
+
+    result = brain.rehydrate_original(content)
+
+    assert result == "retry"
+    assert ldrive.stat(drive_path) is not None
+    assert not Path(brain.engine.st.download_path(content["id"], "mp4")).exists()
+
+    saved = brain.engine.db.one(
+        "SELECT local_path FROM contents WHERE id=?", (content["id"],)
+    )
+    assert saved["local_path"] is None

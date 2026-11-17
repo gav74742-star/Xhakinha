@@ -28,7 +28,8 @@ class Pipeline:
         self.cleaner = Cleaner(st)
         self.pubs = publishers or {"tiktok": TikTokPublisher(s, db), "instagram": InstagramPublisher(s, db)}
         self.detector = analysis.haar_faces          # injetável nos testes
-        self.clip_fetcher = None                     # nuvem: callable(clip)->"present|restored|retry|missing|corrupt|no_drive_copy"
+        self.clip_fetcher = None                     # nuvem: recuperação de clipes
+        self.original_fetcher = None                 # nuvem: recuperação de originais
 
     def ingest_paused(self) -> bool:
         """True quando o armazenamento (Drive) está no limite: NOVAS ingestões param; publicações e clipes já em estoque seguem."""
@@ -172,12 +173,42 @@ class Pipeline:
     # ------------------------------------------------------------ processar
     def process_content(self, cid: int, max_clips: int | None = None, origin: str | None = None) -> list[int]:
         c = self.db.one("SELECT * FROM contents WHERE id=?", (cid,))
+        if not c:
+            raise PermanentError(f"conteúdo {cid} não encontrado")
+
         path = Path(c["local_path"] or "")
         if not path.is_file():
-            # original ausente: reaquisição (sem desperdiçar retentativa de processamento)
-            self.db.x("UPDATE contents SET status='queued', local_path=NULL WHERE id=?", (cid,))
-            self.q.enqueue("acquire", {"content_id": cid}, dedupe_key=f"acquire:{cid}", content_id=cid, priority=4)
-            raise NotReadyYet("original ausente; reaquisição agendada", retry_after=600)
+            result = self.original_fetcher(c) if self.original_fetcher else "no_drive_copy"
+
+            if result in ("present", "restored"):
+                c = self.db.one("SELECT * FROM contents WHERE id=?", (cid,))
+                path = Path(c["local_path"] or "") if c else Path("")
+            elif result == "retry":
+                raise NotReadyYet(
+                    "original em recuperação no Drive; processamento aguardará",
+                    retry_after=300,
+                )
+            elif result in ("missing", "corrupt"):
+                raise PermanentError(
+                    f"original {cid}: cópia do Drive {result}; verificar armazenamento"
+                )
+
+            if not path.is_file():
+                self.db.x(
+                    "UPDATE contents SET status='queued' WHERE id=?",
+                    (cid,),
+                )
+                self.q.enqueue(
+                    "acquire",
+                    {"content_id": cid},
+                    dedupe_key=f"acquire:{cid}",
+                    content_id=cid,
+                    priority=4,
+                )
+                raise NotReadyYet(
+                    "original ausente e sem cópia recuperável; reaquisição agendada",
+                    retry_after=600,
+                )
         self.db.x("UPDATE contents SET status='analyzing', error=NULL WHERE id=?", (cid,))
         try:
             meta = probe(path)

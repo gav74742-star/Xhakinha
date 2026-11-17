@@ -17,7 +17,8 @@ from ..config import Settings
 from ..engine import Engine
 from ..retry import NotReadyYet, PermanentError, TransientError
 from .. import scheduler
-from ..storage import sha256_file
+from ..media import probe
+from ..storage import quick_fingerprint, sha256_file
 from .coordinator import Fenced
 from .drive_storage import DriveBackend, DriveFull, IntegrityError
 from .journal import PubJournal
@@ -43,7 +44,7 @@ class Brain:
         self.last_rehydrate = 0.0
         self.fenced = threading.Event()
         self.report: dict = {"restored": None, "snapshots": 0, "uploaded": 0, "ingested": 0, "fallback_local": 0,
-                       "rehydrated": 0, "journal_applied": 0}
+                       "rehydrated": 0, "originals_rehydrated": 0, "journal_applied": 0}
 
     # ------------------------------------------------------------ ciclo de vida
     def acquire(self) -> bool:
@@ -70,6 +71,7 @@ class Brain:
         self._install_publish_guard()
         self._install_journal()
         self.engine.pl.clip_fetcher = self.rehydrate_clip
+        self.engine.pl.original_fetcher = self.rehydrate_original
         rep = self.journal.reconcile(self.engine.db, lambda cid: scheduler.refresh_clip_status(self.engine.db, cid))
         self.report["journal_applied"] = len(rep["adopted"]) + len(rep["published"])
         self.rehydrate_pending()
@@ -163,6 +165,113 @@ class Brain:
         self.report["uploaded"] += n
         return n
 
+    # ------------------------------------------------------------ reidratação de originais
+    def rehydrate_original(self, content: dict) -> str:
+        """Restaura o original do Drive e valida identidade antes de atualizar o banco."""
+        db, st = self.engine.db, self.engine.st
+        cid = content["id"]
+
+        local = Path(content.get("local_path") or "")
+        if content.get("local_path") and local.is_file():
+            return "present"
+
+        dp = content.get("drive_path")
+        if not dp:
+            db.event(
+                "warn", "rehydrate",
+                f"original {cid} sem cópia no Drive; será necessária nova aquisição",
+                content=cid,
+            )
+            return "no_drive_copy"
+
+        suffix = Path(content.get("local_path") or "original.mp4").suffix
+        ext = suffix.lstrip(".") or "mp4"
+        dest = st.download_path(cid, ext)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            remote = self.drive.stat(dp)
+            if not remote:
+                db.event(
+                    "error", "rehydrate",
+                    f"original {cid}: arquivo não encontrado no Drive ({dp})",
+                    content=cid,
+                )
+                return "missing"
+
+            size = int(remote.get("size") or 0)
+            if not st.has_space(size):
+                db.event(
+                    "warn", "rehydrate",
+                    f"original {cid}: espaço local insuficiente para restauração",
+                    content=cid,
+                )
+                return "retry"
+
+            # O backend valida o MD5 do arquivo baixado.
+            self.drive.download(dp, dest)
+
+            try:
+                meta = probe(dest)
+                if float(meta.get("duration") or 0) < 5:
+                    raise IntegrityError("duração inferior a 5 segundos")
+
+                expected = content.get("fingerprint")
+                actual = quick_fingerprint(dest, content.get("duration"))
+                if not expected or actual != expected:
+                    raise IntegrityError("fingerprint difere do registro no Turso")
+            except IntegrityError:
+                raise
+            except Exception as e:
+                raise IntegrityError(
+                    f"arquivo baixado não é um vídeo válido: {e}"
+                ) from e
+
+        except IntegrityError as e:
+            dest.unlink(missing_ok=True)
+            db.event(
+                "error", "rehydrate",
+                f"original {cid}: integridade não confirmada ({e})",
+                content=cid,
+            )
+            return "corrupt"
+        except TransientError as e:
+            dest.unlink(missing_ok=True)
+            db.event(
+                "warn", "rehydrate",
+                f"original {cid}: falha temporária ({e}); tentará novamente",
+                content=cid,
+            )
+            return "retry"
+        except PermanentError as e:
+            dest.unlink(missing_ok=True)
+            db.event(
+                "error", "rehydrate",
+                f"original {cid}: falha permanente no Drive ({e})",
+                content=cid,
+            )
+            return "missing"
+        except Exception as e:
+            dest.unlink(missing_ok=True)
+            db.event(
+                "error", "rehydrate",
+                f"original {cid}: arquivo restaurado inválido ({e})",
+                content=cid,
+            )
+            return "corrupt"
+
+        db.x(
+            "UPDATE contents SET local_path=?, error=NULL WHERE id=?",
+            (str(dest), cid),
+        )
+        self.report["originals_rehydrated"] += 1
+        db.event(
+            "info", "rehydrate",
+            f"original {cid} restaurado e validado a partir do Drive",
+            content=cid,
+        )
+        return "restored"
+
     # ------------------------------------------------------------ reidratação de clipes
     def rehydrate_clip(self, clip: dict) -> str:
         """Garante o arquivo local do clipe a partir do Drive. Mantém id/registros; confere sha256; não reenvia nada.
@@ -229,8 +338,24 @@ class Brain:
         def h_process(job: dict):
             cid = job["payload"]["content_id"]
             c = pl.db.one("SELECT * FROM contents WHERE id=?", (cid,))
-            if not c or not c["local_path"] or not c["fingerprint"] or not Path(c["local_path"]).is_file():
+            if not c or not c["fingerprint"]:
                 return local(job)
+
+            if not c.get("local_path") or not Path(c["local_path"]).is_file():
+                result = pl.original_fetcher(c) if pl.original_fetcher else "no_drive_copy"
+                if result == "retry":
+                    raise NotReadyYet(
+                        "original sendo restaurado do Drive antes do processamento remoto",
+                        retry_after=300,
+                    )
+                if result in ("present", "restored"):
+                    c = pl.db.one("SELECT * FROM contents WHERE id=?", (cid,))
+                else:
+                    return local(job)
+
+            if not c or not c.get("local_path") or not Path(c["local_path"]).is_file():
+                return local(job)
+
             key = c["fingerprint"][:32]
             dp = c.get("drive_path") or f"originals/{key}{Path(c['local_path']).suffix}"
             try:
