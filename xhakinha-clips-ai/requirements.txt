@@ -11,3 +11,5 @@ libsql>=0.1.8
 python-multipart>=0.0.9
 yt-dlp>=2025.1.1
 faster-whisper>=1.0.3
+# faster-whisper 1.2.1 compatibility with PyAV
+av>=11,<19
