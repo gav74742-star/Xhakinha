@@ -387,7 +387,7 @@ class Coordinator:
             for e in exs:
                 e["seen_ago_s"] = round(now - (e["last_seen"] or now))
                 e["time_left_s"] = round(e["session_deadline"] - now) if e["session_deadline"] else None
-            tasks = self._q("SELECT id,kind,status,priority,owner,fence,attempts,lease_until,error,updated FROM tasks "
+            tasks = self._q("SELECT id,kind,status,priority,owner,fence,attempts,lease_until,error,updated," "needs,prefer,est_seconds,run_after,created FROM tasks "
                             "WHERE status IN ('running','queued','dead') ORDER BY priority DESC, created LIMIT 60")
             return {"now": now, "counts": self.counts(), "providers": provs, "executors": exs, "tasks": tasks,
                     "locks": self._q("SELECT name,owner,fence,lease_until FROM locks"),

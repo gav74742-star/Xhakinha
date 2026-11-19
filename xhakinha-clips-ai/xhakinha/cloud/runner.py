@@ -27,12 +27,12 @@ log = logging.getLogger("xh.runner")
 def detect_provider(env=os.environ) -> str:
     if env.get("XH_PROVIDER"):
         return env["XH_PROVIDER"]
-    if env.get("KAGGLE_KERNEL_RUN_TYPE") or Path("/kaggle/working").exists():
-        return "kaggle-gpu" if gpu_info()["gpu"] else "kaggle-cpu"
-    if env.get("COLAB_RELEASE_TAG") or env.get("COLAB_GPU") is not None:
-        return "colab"
     if env.get("GITHUB_ACTIONS"):
         return "github"
+    if env.get("COLAB_RELEASE_TAG") or env.get("COLAB_GPU") is not None:
+        return "colab"
+    if env.get("KAGGLE_KERNEL_RUN_TYPE") or Path("/kaggle/working").exists():
+        return "kaggle-gpu" if gpu_info()["gpu"] else "kaggle-cpu"
     return "local"
 
 
