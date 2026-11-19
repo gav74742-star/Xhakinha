@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ..config import Settings
 from ..engine import Engine
+from ..db import Store
 from ..retry import NotReadyYet, PermanentError, TransientError
 from .. import scheduler
 from ..media import probe
@@ -64,10 +65,22 @@ class Brain:
     def prepare(self) -> None:
         self.s.ensure_dirs()
         self.drive.ensure_layout()
-        m = self.snaps.restore_latest(self.s.db_path)             # CorruptState => aborta: nunca inicia "vazio" por cima
-        self.report["restored"] = m["file"] if m else None
-        if self.engine is None:
-            self.engine = Engine(self.s)
+
+        remote_db = (
+            self.engine.db.is_remote
+            if self.engine is not None
+            else Store.remote_requested()
+        )
+
+        if remote_db:
+            self.report["restored"] = "turso"
+            if self.engine is None:
+                self.engine = Engine(self.s, db=Store(self.s))
+        else:
+            m = self.snaps.restore_latest(self.s.db_path)
+            self.report["restored"] = m["file"] if m else None
+            if self.engine is None:
+                self.engine = Engine(self.s)
         self._install_publish_guard()
         self._install_journal()
         self.engine.pl.clip_fetcher = self.rehydrate_clip
@@ -85,6 +98,8 @@ class Brain:
         c.execute("UPDATE publications SET state=json_remove(state,'$.upload_url') WHERE state LIKE '%upload_url%'")
 
     def snapshot(self) -> dict | None:
+        if self.engine.db.is_remote:
+            return None
         if not self.still_owner():
             return None
         meta = self.snaps.create(self.engine.db.conn, self.fence, still_owner=self.still_owner, sanitize=self._sanitize)
@@ -448,15 +463,20 @@ class Brain:
                     self.check_storage()
                 if self.clock() - self.last_rehydrate >= 300:
                     self.rehydrate_pending()
-                if self.clock() - last_snap >= self.snapshot_every_s:
-                    self.snapshot(); last_snap = self.clock()
+                if (
+                    not self.engine.db.is_remote
+                    and self.clock() - last_snap >= self.snapshot_every_s
+                ):
+                    self.snapshot()
+                    last_snap = self.clock()
                 sleep(tick_s)
         finally:
             self.engine.stop()                                      # para workers ANTES do snapshot final
             if status != "fenced" and self.still_owner():
                 self.sync_files()
                 self.journal.flush()
-                self.snapshot()
+                if not self.engine.db.is_remote:
+                    self.snapshot()
                 self.client.lock_release(LOCK, self.owner, self.fence)
             elif status == "fenced":
                 self.engine.db.event("error", "brain", "lock perdido: sem snapshot final nem novas publicações")

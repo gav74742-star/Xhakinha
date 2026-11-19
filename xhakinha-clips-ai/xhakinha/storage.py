@@ -118,6 +118,11 @@ class Storage:
 
     # backup ------------------------------------------------------------
     def backup_db(self) -> Path:
+        if self.db.is_remote:
+            raise RuntimeError(
+                "Backup SQLite local indisponível no backend Turso. "
+                "Use backup lógico do banco remoto."
+            )
         self.s.backup_dir.mkdir(parents=True, exist_ok=True)
         dest = self.s.backup_dir / f"xhakinha-{datetime.now(self.s.tz).strftime('%Y%m%d-%H%M%S')}.db"
         src = self.db.conn

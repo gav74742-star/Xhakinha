@@ -6,7 +6,8 @@ import os
 
 SECRET_NAMES = ["SECRET_KEY", "XH_COORD_URL", "XH_COORD_TOKEN", "GDRIVE_CLIENT_ID", "GDRIVE_CLIENT_SECRET",
                 "GDRIVE_REFRESH_TOKEN", "YOUTUBE_API_KEY", "TWITCH_CLIENT_ID", "TWITCH_CLIENT_SECRET",
-                "TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET", "PUBLIC_BASE_URL"]
+                "TIKTOK_CLIENT_KEY", "TIKTOK_CLIENT_SECRET", "PUBLIC_BASE_URL",
+                "TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN"]
 
 
 def load_kaggle_secrets() -> list[str]:
@@ -31,6 +32,7 @@ def main() -> None:
     print("secrets carregados:", got)
     os.environ.setdefault("DATA_DIR", "/kaggle/working/xh-data")
     os.environ.setdefault("XH_ENV", "production")
+    os.environ.setdefault("XH_STATE_BACKEND", "turso")
     os.environ.setdefault("COOKIE_SECURE", "1")
     from .runner import main as run
     run()

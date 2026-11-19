@@ -9,6 +9,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Iterable
+from collections.abc import Mapping
+import os
 
 from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import hashes
@@ -62,6 +64,96 @@ CREATE TABLE IF NOT EXISTS realtests(id INTEGER PRIMARY KEY, started REAL, finis
 CREATE TABLE IF NOT EXISTS logins(ip TEXT, ts REAL);
 """
 
+
+
+class _LibSQLRow(Mapping):
+    """Linha compatível com sqlite3.Row: row[0], row['campo'], dict(row)."""
+
+    def __init__(self, description, values):
+        self._keys = tuple(col[0] for col in (description or ()))
+        self._values = tuple(values or ())
+        self._index = {key: i for i, key in enumerate(self._keys)}
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return self._values[self._index[key]]
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __len__(self):
+        return len(self._keys)
+
+
+class _LibSQLCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+        self.description = cursor.description
+        self.rowcount = getattr(cursor, "rowcount", -1)
+        self.lastrowid = getattr(cursor, "lastrowid", None)
+
+    def _row(self, row):
+        return None if row is None else _LibSQLRow(self.description, row)
+
+    def fetchone(self):
+        return self._row(self._cursor.fetchone())
+
+    def fetchall(self):
+        return [self._row(r) for r in self._cursor.fetchall()]
+
+    def fetchmany(self, size=None):
+        rows = (
+            self._cursor.fetchmany()
+            if size is None else self._cursor.fetchmany(size)
+        )
+        return [self._row(r) for r in rows]
+
+    def close(self):
+        close = getattr(self._cursor, "close", None)
+        if close:
+            close()
+
+
+class _LibSQLConnection:
+    """Adaptador mínimo para os métodos usados pelo projeto."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, sql, args=()):
+        cur = self._connection.execute(sql, tuple(args))
+        return _LibSQLCursor(cur)
+
+    def executemany(self, sql, seq):
+        cur = self._connection.executemany(sql, seq)
+        return _LibSQLCursor(cur)
+
+    def executescript(self, script):
+        # Executa cada instrução completa, inclusive DDL multilinha.
+        statement = ""
+        for line in script.splitlines(True):
+            statement += line
+            if sqlite3.complete_statement(statement):
+                if statement.strip():
+                    self.execute(statement)
+                statement = ""
+        if statement.strip():
+            raise RuntimeError(
+                "Script SQL terminou com instrução incompleta."
+            )
+
+    def commit(self):
+        return self._connection.commit()
+
+    def rollback(self):
+        return self._connection.rollback()
+
+    def close(self):
+        return self._connection.close()
+
+
+
 DEFAULT_SETTINGS: dict[str, Any] = {
     "engine_state": "running",           # running | paused | stopped
     "daily_min": 8, "daily_normal": 10, "daily_max": 12,   # por plataforma
@@ -90,8 +182,38 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 
 class Store:
+    @staticmethod
+    def remote_requested() -> bool:
+        backend = os.environ.get("XH_STATE_BACKEND", "auto").strip().lower()
+        url = os.environ.get("TURSO_DATABASE_URL", "").strip()
+        token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+
+        if backend not in ("auto", "sqlite", "turso"):
+            raise RuntimeError(
+                "XH_STATE_BACKEND deve ser auto, sqlite ou turso."
+            )
+
+        if backend == "sqlite":
+            return False
+
+        if bool(url) != bool(token):
+            raise RuntimeError(
+                "TURSO_DATABASE_URL e TURSO_AUTH_TOKEN devem ser "
+                "configuradas juntas."
+            )
+
+        if backend == "turso" and not (url and token):
+            raise RuntimeError(
+                "Backend Turso solicitado, mas faltam credenciais."
+            )
+
+        return bool(url and token)
+
     def __init__(self, settings: Settings):
         self.s = settings
+        self._remote = self.remote_requested()
+        self._turso_url = os.environ.get("TURSO_DATABASE_URL", "")
+        self._turso_token = os.environ.get("TURSO_AUTH_TOKEN", "")
         self._local = threading.local()
         settings.ensure_dirs()
         self._init()
@@ -101,16 +223,44 @@ class Store:
 
     # conexão -----------------------------------------------------------
     @property
-    def conn(self) -> sqlite3.Connection:
+    def is_remote(self) -> bool:
+        return self._remote
+
+    @property
+    def conn(self):
         c = getattr(self._local, "c", None)
         if c is None:
-            c = sqlite3.connect(str(self.s.db_path), timeout=30, isolation_level=None,
-                                check_same_thread=False)
-            c.row_factory = sqlite3.Row
-            c.execute("PRAGMA journal_mode=WAL")
-            c.execute("PRAGMA busy_timeout=30000")
-            c.execute("PRAGMA foreign_keys=ON")
-            c.execute("PRAGMA synchronous=NORMAL")
+            if self._remote:
+                try:
+                    import libsql
+                except ImportError as exc:
+                    raise RuntimeError(
+                        "Driver libsql não instalado. "
+                        "Instale libsql==0.1.11."
+                    ) from exc
+
+                native = libsql.connect(
+                    database=self._turso_url,
+                    auth_token=self._turso_token,
+                )
+                c = _LibSQLConnection(native)
+                try:
+                    c.execute("PRAGMA foreign_keys=ON")
+                except Exception:
+                    pass
+            else:
+                c = sqlite3.connect(
+                    str(self.s.db_path),
+                    timeout=30,
+                    isolation_level=None,
+                    check_same_thread=False,
+                )
+                c.row_factory = sqlite3.Row
+                c.execute("PRAGMA journal_mode=WAL")
+                c.execute("PRAGMA busy_timeout=30000")
+                c.execute("PRAGMA foreign_keys=ON")
+                c.execute("PRAGMA synchronous=NORMAL")
+
             self._local.c = c
         return c
 
@@ -184,7 +334,7 @@ class Store:
         try:
             self.x("INSERT INTO events(ts,level,component,message,ctx) VALUES(?,?,?,?,?)",
                    (time.time(), level, component, redact(message)[:2000], redact(json.dumps(ctx, default=str))[:2000]))
-        except sqlite3.Error:
+        except Exception:
             pass
 
     def attempt(self, ref_type: str, ref_id: int, op: str, ok: bool, message: str = "") -> None:
