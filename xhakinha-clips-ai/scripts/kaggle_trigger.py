@@ -97,12 +97,6 @@ def main() -> int:
         "X-Requested-With": "XHK",
     }
 
-    recovery = requests.post(
-        base + "/api/admin/reap", json={}, timeout=30, headers=headers
-    )
-    recovery.raise_for_status()
-    print("recuperação:", recovery.json())
-
     response = requests.get(base + "/api/state", timeout=30, headers=headers)
     response.raise_for_status()
 
