@@ -26,6 +26,7 @@ jobs:
       XH_ADMIN_TOKEN: ${{ secrets.XH_ADMIN_TOKEN }}
       KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
       KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+      PYTHONPATH: ${{ github.workspace }}/xhakinha-clips-ai
 
     steps:
       - name: Baixar repositório
