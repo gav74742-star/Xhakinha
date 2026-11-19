@@ -26,13 +26,35 @@ def decide(state: dict) -> tuple[bool, str]:
 
 
 def main() -> int:
-    r = requests.get(os.environ["XH_COORD_URL"].rstrip("/") + "/api/state", timeout=30,
-                     headers={"Authorization": "Bearer " + os.environ["XH_ADMIN_TOKEN"], "X-Requested-With": "XHK"})
+    base = os.environ["XH_COORD_URL"].rstrip("/")
+    headers = {
+        "Authorization": "Bearer " + os.environ["XH_ADMIN_TOKEN"],
+        "X-Requested-With": "XHK",
+    }
+
+    # Recupera leases, locks e executores vencidos antes da decisão.
+    recovery = requests.post(
+        base + "/api/admin/reap",
+        json={},
+        timeout=30,
+        headers=headers,
+    )
+    recovery.raise_for_status()
+    print("recuperação:", recovery.json())
+
+    r = requests.get(
+        base + "/api/state",
+        timeout=30,
+        headers=headers,
+    )
     r.raise_for_status()
+
     ok, why = decide(r.json())
     print("decisão:", ok, "-", why)
+
     if not ok:
         return 0
+
     return subprocess.call(["kaggle", "kernels", "push", "-p", "kaggle"])
 
 
