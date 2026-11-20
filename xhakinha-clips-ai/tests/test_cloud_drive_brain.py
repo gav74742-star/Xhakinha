@@ -489,3 +489,305 @@ def test_rehydrate_original_sem_espaco_local_tenta_novamente(
         "SELECT local_path FROM contents WHERE id=?", (content["id"],)
     )
     assert saved["local_path"] is None
+
+
+# ----------------------------------------------------------------
+# INTEGRACAO REMOTA COM ORIGINAL AUSENTE NO COORDENADOR
+
+def test_remote_processa_original_disponivel_so_no_drive(
+    settings, ldrive, synth_video
+):
+    from xhakinha.retry import NotReadyYet
+
+    brain, content, drive_path = _setup_original_recovery(
+        settings, ldrive, synth_video
+    )
+
+    job = {
+        "payload": {"content_id": content["id"], "max_clips": 2},
+        "type": "process",
+    }
+
+    with pytest.raises(NotReadyYet):
+        brain.engine.pl.h_process(job)
+
+    key = content["fingerprint"][:32]
+    task = brain.client.get_by_key(f"process:{key}")
+
+    assert task is not None
+    payload = json.loads(task["payload"])
+    assert payload["drive_path"] == drive_path
+    assert payload["content_key"] == key
+    assert ldrive.stat(drive_path) is not None
+
+    saved = brain.engine.db.one(
+        "SELECT local_path, drive_path FROM contents WHERE id=?",
+        (content["id"],),
+    )
+    assert saved["local_path"] is None
+    assert saved["drive_path"] == drive_path
+
+
+def test_fallback_local_reidrata_original_antes_de_processar(
+    settings, ldrive, synth_video, monkeypatch
+):
+    brain, content, drive_path = _setup_original_recovery(
+        settings, ldrive, synth_video
+    )
+
+    called = []
+    monkeypatch.setattr(
+        brain.client,
+        "get_by_key",
+        lambda key: {"status": "dead", "created": brain.clock()},
+    )
+
+    def fake_process(content_id, max_clips=None):
+        called.append((content_id, max_clips))
+        return "processado-localmente"
+
+    monkeypatch.setattr(
+        brain.engine.pl, "process_content", fake_process
+    )
+
+    job = {
+        "payload": {"content_id": content["id"], "max_clips": 2},
+        "type": "process",
+    }
+
+    result = brain.engine.pl.h_process(job)
+
+    assert result is None
+    assert called == [(content["id"], 2)]
+
+    saved = brain.engine.db.one(
+        "SELECT local_path, drive_path FROM contents WHERE id=?",
+        (content["id"],),
+    )
+    assert saved["local_path"]
+    assert Path(saved["local_path"]).is_file()
+    assert saved["drive_path"] == drive_path
+    assert ldrive.stat(drive_path) is not None
+    assert brain.report["originals_rehydrated"] == 1
+    assert brain.report["fallback_local"] == 1
+
+
+def test_fallback_local_adia_quando_reidratacao_precisa_retry(
+    settings, ldrive, synth_video, monkeypatch
+):
+    from xhakinha.retry import NotReadyYet
+
+    brain, content, drive_path = _setup_original_recovery(
+        settings, ldrive, synth_video
+    )
+
+    monkeypatch.setattr(
+        brain.client,
+        "get_by_key",
+        lambda key: {"status": "dead", "created": brain.clock()},
+    )
+    monkeypatch.setattr(
+        brain, "rehydrate_original", lambda c: "retry"
+    )
+
+    called = []
+    monkeypatch.setattr(
+        brain.engine.pl,
+        "process_content",
+        lambda job: called.append(job),
+    )
+
+    job = {
+        "payload": {"content_id": content["id"], "max_clips": 2},
+        "type": "process",
+    }
+
+    with pytest.raises(NotReadyYet, match="restauração do original"):
+        brain.engine.pl.h_process(job)
+
+    assert called == []
+    assert brain.report["fallback_local"] == 0
+    assert ldrive.stat(drive_path) is not None
+
+    saved = brain.engine.db.one(
+        "SELECT local_path, drive_path FROM contents WHERE id=?",
+        (content["id"],),
+    )
+    assert saved["local_path"] is None
+    assert saved["drive_path"] == drive_path
+
+def test_fallback_local_bloqueia_original_missing_ou_corrupt(
+    settings, ldrive, synth_video, monkeypatch
+):
+    import pytest
+    from xhakinha.retry import PermanentError
+
+    brain, content, drive_path = _setup_original_recovery(
+        settings, ldrive, synth_video
+    )
+    called = []
+
+    monkeypatch.setattr(
+        brain.client,
+        "get_by_key",
+        lambda key: {"status": "dead", "created": brain.clock()},
+    )
+    monkeypatch.setattr(
+        brain.engine.pl,
+        "process_content",
+        lambda *args, **kwargs: called.append(args),
+    )
+
+    job = {
+        "payload": {"content_id": content["id"], "max_clips": 2},
+        "type": "process",
+    }
+
+    for status in ("missing", "corrupt"):
+        monkeypatch.setattr(
+            brain, "rehydrate_original",
+            lambda c, result=status: result,
+        )
+        with pytest.raises(PermanentError, match="irrecuperável no Drive"):
+            brain.engine.pl.h_process(job)
+
+    assert called == []
+    assert brain.report["fallback_local"] == 0
+    assert ldrive.stat(drive_path) is not None
+
+
+def test_fallback_local_substitui_copia_local_com_fingerprint_invalido(
+    settings, ldrive, synth_video, monkeypatch
+):
+    from xhakinha.storage import quick_fingerprint
+
+    brain, content, drive_path = _setup_original_recovery(
+        settings, ldrive, synth_video
+    )
+
+    # Recria um arquivo local inválido no destino esperado da restauração.
+    dest = brain.engine.st.download_path(content["id"], "mp4")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"arquivo local incompleto e invalido")
+
+    brain.engine.db.x(
+        "UPDATE contents SET local_path=? WHERE id=?",
+        (str(dest), content["id"]),
+    )
+
+    called = []
+    monkeypatch.setattr(
+        brain.client,
+        "get_by_key",
+        lambda key: {"status": "dead", "created": brain.clock()},
+    )
+
+    def fake_process(content_id, max_clips=None):
+        called.append((content_id, max_clips))
+
+    monkeypatch.setattr(
+        brain.engine.pl, "process_content", fake_process
+    )
+
+    job = {
+        "payload": {"content_id": content["id"], "max_clips": 2},
+        "type": "process",
+    }
+    brain.engine.pl.h_process(job)
+
+    saved = brain.engine.db.one(
+        "SELECT local_path, drive_path FROM contents WHERE id=?",
+        (content["id"],),
+    )
+
+    assert called == [(content["id"], 2)]
+    assert saved["local_path"] == str(dest)
+    assert dest.is_file()
+    assert quick_fingerprint(dest, content["duration"]) == content["fingerprint"]
+    assert saved["drive_path"] == drive_path
+    assert ldrive.stat(drive_path) is not None
+    assert brain.report["originals_rehydrated"] == 1
+    assert brain.report["fallback_local"] == 1
+
+# ----------------------------------------------------------------
+# INTEGRIDADE: BLOQUEIO DE UPLOAD DE ORIGINAIS DIVERGENTES
+
+def _setup_original_without_drive(settings, ldrive, synth_video):
+    from conftest import make_content
+    from xhakinha.cloud.brain import Brain
+    from xhakinha.cloud.coordinator import Coordinator
+
+    co = Coordinator(":memory:")
+    client = LocalClient(co)
+    brain = Brain(settings, ldrive, client, "integrity-upload-test")
+    assert brain.acquire()
+    brain.prepare()
+
+    cid = make_content(brain.engine, synth_video)
+    content = dict(brain.engine.db.one(
+        "SELECT * FROM contents WHERE id=?", (cid,)
+    ))
+    return brain, content
+
+
+def test_upload_originals_bloqueia_fingerprint_divergente(
+    settings, ldrive, synth_video
+):
+    brain, content = _setup_original_without_drive(
+        settings, ldrive, synth_video
+    )
+    local_path = Path(content["local_path"])
+    expected_path = (
+        f"originals/{content['fingerprint'][:32]}{local_path.suffix}"
+    )
+
+    # Altera o arquivo sem atualizar o fingerprint persistido.
+    local_path.write_bytes(b"conteudo local adulterado")
+
+    uploaded = brain.sync_files()
+
+    saved = brain.engine.db.one(
+        "SELECT drive_path FROM contents WHERE id=?",
+        (content["id"],),
+    )
+    events = brain.engine.db.q(
+        "SELECT * FROM events WHERE component='integrity'"
+    )
+
+    assert uploaded == 0
+    assert saved["drive_path"] is None
+    assert ldrive.stat(expected_path) is None
+    assert events
+
+
+def test_upload_imediato_bloqueia_fingerprint_divergente(
+    settings, ldrive, synth_video
+):
+    from xhakinha.retry import PermanentError
+
+    brain, content = _setup_original_without_drive(
+        settings, ldrive, synth_video
+    )
+    local_path = Path(content["local_path"])
+    expected_path = (
+        f"originals/{content['fingerprint'][:32]}{local_path.suffix}"
+    )
+
+    # O registro continua apontando para o fingerprint original.
+    local_path.write_bytes(b"conteudo local adulterado")
+
+    job = {
+        "payload": {"content_id": content["id"], "max_clips": 2},
+        "type": "process",
+    }
+
+    with pytest.raises(PermanentError, match="fingerprint divergente"):
+        brain.engine.pl.h_process(job)
+
+    saved = brain.engine.db.one(
+        "SELECT drive_path FROM contents WHERE id=?",
+        (content["id"],),
+    )
+
+    assert saved["drive_path"] is None
+    assert ldrive.stat(expected_path) is None
