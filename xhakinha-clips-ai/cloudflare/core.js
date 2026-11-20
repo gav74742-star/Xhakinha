@@ -168,7 +168,7 @@ export class Coord {
     const counts = {}; for (const r of await all(this.db, "SELECT status, count(*) n FROM tasks GROUP BY status")) counts[r.status] = r.n;
     const exs = (await all(this.db, "SELECT id,provider,status,last_seen,session_deadline FROM executors ORDER BY last_seen DESC LIMIT 30")).map(e => ({ ...e, seen_ago_s: Math.round(now - (e.last_seen || now)), time_left_s: e.session_deadline ? Math.round(e.session_deadline - now) : null }));
     return { now, counts, providers: provs, executors: exs,
-      tasks: await all(this.db, "SELECT id,kind,status,priority,owner,fence,attempts,lease_until,error,updated FROM tasks WHERE status IN ('running','queued','dead') ORDER BY priority DESC, created LIMIT 60"),
+      tasks: await all(this.db, "SELECT id,kind,status,priority,needs,prefer,run_after,est_seconds,created,owner,fence,attempts,lease_until,error,updated FROM tasks WHERE status IN ('running','queued','dead') ORDER BY priority DESC, created LIMIT 60"),
       locks: await all(this.db, "SELECT name,owner,fence,lease_until FROM locks"), events: await all(this.db, "SELECT ts,level,component,message FROM events ORDER BY id DESC LIMIT 40"),
       history: await all(this.db, "SELECT task_id,executor,provider,outcome,ts,seconds,note FROM history ORDER BY id DESC LIMIT 40") };
   }
