@@ -223,6 +223,11 @@ def test_ingestao_pausa_com_drive_no_limite_mas_publicacao_segue_e_retoma_com_hi
     fake.flags["tt_status_seq"] = ["PUBLISH_COMPLETE"]
     cloud = Cloud(tmp_path, fake, capacity=4_000_000_000)                 # 4 GB livres: ok
     b = cloud.session(); eng = b.engine
+    monkeypatch.setattr("xhakinha.engine.psutil.cpu_percent", lambda interval=None: 10)
+    monkeypatch.setattr(
+        "xhakinha.engine.psutil.virtual_memory",
+        lambda: type("Mem", (), {"available": 80, "total": 100})(),
+    )
     _tt_setup(eng, fake, audited=1)
     clip = _ready_clip(eng, synth_video); pid = _tt_pub(eng, clip); b.sync_files()
     assert b.check_storage()["free_gb"] > 3 and not eng.db.get("ingest_paused")

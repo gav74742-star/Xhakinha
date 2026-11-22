@@ -207,7 +207,12 @@ def test_disk_pressure_frees_only_safe_files(engine):
 
 
 # ------------------------------------------------------------------ motor / monitor
-def test_engine_tick_enqueues_monitor_runs_cycle_and_recovers_jobs(engine):
+def test_engine_tick_enqueues_monitor_runs_cycle_and_recovers_jobs(engine, monkeypatch):
+    monkeypatch.setattr("xhakinha.engine.psutil.cpu_percent", lambda interval=None: 10)
+    monkeypatch.setattr(
+        "xhakinha.engine.psutil.virtual_memory",
+        lambda: type("Mem", (), {"available": 80, "total": 100})(),
+    )
     engine.db.x("INSERT INTO sources(platform,name,ref,enabled,authorized,interval_s,created) VALUES('youtube','c','@c',1,1,300,0)")
     engine.q.enqueue("x", dedupe_key="stuck"); engine.q.claim("old-process")          # processo anterior morreu com job 'running'
     assert engine.q.recover_all_running() == 1
@@ -288,3 +293,74 @@ def test_realtest_without_sources_or_accounts_reports_not_tested(engine):
     rt._run(rid, None)
     r = rt.latest()
     assert r["status"] == "failed" and r["result"]["diagnostic"]["precisa_correcao"] and "Nenhuma fonte" in r["steps"][-1]["detail"]
+
+
+def test_monitor_recovers_queued_content_without_acquire_job(engine):
+    from xhakinha.sources.base import ContentInfo
+
+    db = engine.db
+    sid = db.x(
+        "INSERT INTO sources(platform,name,ref,enabled,authorized,created) VALUES(?,?,?,?,?,?)",
+        ("youtube", "recovery-test", "UC" + "a" * 22, 1, 1, 0),
+    )
+    cid = db.x(
+        "INSERT INTO contents(source_id,ext_id,kind,title,url,status,discovered,meta) VALUES(?,?,?,?,?,?,0,?)",
+        (sid, "recovery-video", "vod", "Recovery test", "https://www.youtube.com/watch?v=recovery-video", "queued", "{}"),
+    )
+    src = db.one("SELECT * FROM sources WHERE id=?", (sid,))
+    info = ContentInfo(
+        ext_id="recovery-video",
+        title="Recovery test",
+        url="https://www.youtube.com/watch?v=recovery-video",
+        kind="vod",
+    )
+    engine.pl._ingest(src, [info], {})
+    jobs = db.one("SELECT COUNT(*) n FROM jobs WHERE type=? AND content_id=?", ("acquire", cid))
+    assert jobs["n"] == 1
+
+def test_monitor_recovers_queued_content_with_historical_acquire_jobs(engine):
+    from xhakinha.sources.base import ContentInfo
+
+    db = engine.db
+    sid = db.x(
+        "INSERT INTO sources(platform,name,ref,enabled,authorized,created) VALUES(?,?,?,?,?,?)",
+        ("youtube", "recovery-history-test", "UC" + "b" * 22, 1, 1, 0),
+    )
+    src = db.one("SELECT * FROM sources WHERE id=?", (sid,))
+
+    for previous_status in ("dead", "done", "pending", "running"):
+        ext_id = f"recovery-{previous_status}"
+        cid = db.x(
+            "INSERT INTO contents(source_id,ext_id,kind,title,url,status,discovered,meta) "
+            "VALUES(?,?,?,?,?,?,0,?)",
+            (sid, ext_id, "vod", "Recovery test",
+             f"https://www.youtube.com/watch?v={ext_id}", "queued", "{}"),
+        )
+        db.x(
+            "INSERT INTO jobs(type,payload,status,priority,max_attempts,run_at,"
+            "dedupe_key,content_id,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("acquire", "{}", previous_status, 3, 8, 0,
+             f"acquire:{cid}", cid, 0, 0),
+        )
+
+        info = ContentInfo(
+            ext_id=ext_id,
+            title="Recovery test",
+            url=f"https://www.youtube.com/watch?v={ext_id}",
+            kind="vod",
+        )
+        engine.pl._ingest(src, [info], {})
+
+        jobs = db.q(
+            "SELECT status FROM jobs WHERE type='acquire' AND content_id=? ORDER BY id",
+            (cid,),
+        )
+        statuses = [job["status"] for job in jobs]
+
+        if previous_status in ("dead", "done"):
+            assert len(jobs) == 2, (previous_status, statuses)
+            assert statuses.count("pending") == 1, (previous_status, statuses)
+            assert previous_status in statuses, (previous_status, statuses)
+        else:
+            assert len(jobs) == 1, (previous_status, statuses)
+            assert statuses == [previous_status], (previous_status, statuses)

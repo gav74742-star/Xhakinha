@@ -6,6 +6,7 @@ import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
 
 from .. import http
 from ..retry import PermanentError, QuotaExceeded, TransientError
@@ -34,6 +35,36 @@ def parse_ts(s: str | None) -> float | None:
         return None
 
 
+def extract_video_id(ref: str) -> str | None:
+    """Extrai um ID de vídeo de uma referência ou URL reconhecida do YouTube."""
+    ref = (ref or "").strip()
+
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", ref):
+        return ref
+
+    try:
+        parsed = urlparse(ref if "://" in ref else "https://" + ref)
+    except ValueError:
+        return None
+
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    if host not in {"youtube.com", "m.youtube.com", "music.youtube.com",
+                    "youtu.be", "youtube-nocookie.com"}:
+        return None
+
+    video_id = None
+    if host == "youtu.be":
+        video_id = parsed.path.strip("/").split("/", 1)[0]
+    elif parsed.path == "/watch":
+        video_id = parse_qs(parsed.query).get("v", [None])[0]
+    else:
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2 and parts[0] in {"shorts", "embed", "live", "v"}:
+            video_id = parts[1]
+
+    return video_id if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) else None
+
+
 class YouTubeConnector(Connector):
     platform = "youtube"
     COST_LIST = 1
@@ -55,7 +86,12 @@ class YouTubeConnector(Connector):
         http.need_ok(r, f"YouTube {path}")
         return r.json()
 
+    def video_id(self) -> str | None:
+        return extract_video_id(self.src.get("ref", ""))
+
     def channel_id(self) -> str:
+        if self.video_id():
+            raise PermanentError("Esta fonte é um vídeo individual, não um canal")
         if self.cfg.get("channel_id"):
             return self.cfg["channel_id"]
         ref = self.src["ref"].strip()
@@ -74,6 +110,14 @@ class YouTubeConnector(Connector):
 
     def test(self) -> dict:
         try:
+            video_id = self.video_id()
+            if video_id:
+                items = self._details([video_id])
+                if not items:
+                    raise PermanentError("Vídeo não encontrado ou indisponível")
+                return {"ok": True, "detail": f"Vídeo: {items[0].title}",
+                        "quota_used_today": self.quota.used()}
+
             cid = self.channel_id()
             d = self._api("channels", {"part": "snippet", "id": cid})
             n = (d.get("items") or [{}])[0].get("snippet", {}).get("title")
@@ -112,6 +156,13 @@ class YouTubeConnector(Connector):
         return out
 
     def discover(self, known: dict[str, dict]) -> list[ContentInfo]:
+        video_id = self.video_id()
+        if video_id:
+            previous = known.get(video_id)
+            if previous and previous.get("live_state") not in ("live", "upcoming"):
+                return []
+            return self._details([video_id])
+
         ids = self._rss_ids()
         self.save_cfg()
         want = [i for i in ids if i not in known or known[i].get("live_state") in ("live", "upcoming")]
@@ -120,6 +171,8 @@ class YouTubeConnector(Connector):
         return self._details(want[:150]) if want else []
 
     def list_archive(self, page=None, limit=50):
+        if self.video_id():
+            return [], None
         cid = self.channel_id()
         up = "UU" + cid[2:]
         p = {"part": "contentDetails", "playlistId": up, "maxResults": min(limit, 50)}

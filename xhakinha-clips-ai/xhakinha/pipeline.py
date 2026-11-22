@@ -85,7 +85,26 @@ class Pipeline:
                           (i.live_state, i.ended_at, i.duration, i.title or row["title"], row["id"]))
             if i.live_state in ("live", "upcoming"):
                 continue
-            if row["status"] in ("processed", "queued", "downloading", "downloaded", "analyzing", "skipped"):
+            if row["status"] == "queued":
+                if authorized:
+                    existing = self.db.one(
+                        "SELECT id FROM jobs WHERE type=? AND content_id=? AND status IN ('pending','running') LIMIT 1",
+                        ("acquire", row["id"]),
+                    )
+                    if not existing:
+                        was_live = prev_live in ("live", "upcoming") or i.kind == "live" or bool(i.meta.get("stream_id"))
+                        delay = random.uniform(dmin, dmax) * 60 if was_live else 0
+                        self.q.enqueue(
+                            "acquire",
+                            {"content_id": row["id"], "deadline": now + 48 * 3600},
+                            run_at=now + delay,
+                            priority=3,
+                            dedupe_key=f"acquire:{row['id']}",
+                            content_id=row["id"],
+                            max_attempts=8,
+                        )
+                continue
+            if row["status"] in ("processed", "downloading", "downloaded", "analyzing", "skipped"):
                 continue
             if i.kind == "live" and i.live_state == "ended" and i.ext_id.startswith("stream:"):
                 self.db.x("UPDATE contents SET status='skipped', error='aguardando VOD (substituído por video:*)' WHERE id=?", (row["id"],))

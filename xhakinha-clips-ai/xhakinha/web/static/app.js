@@ -70,7 +70,7 @@ async function vPainel() {
     ...Object.entries(s.platforms).map(([p, t]) => h('div', { class: 'card' }, h('h3', {}, p + ' — hoje ', pill(t.connected ? 'conectado' : 'NÃO conectado', t.connected ? 'ok' : 'bad')),
       h('div', { class: 'grid' }, kp(t.published, 'publicados'), kp(t.target, 'meta de hoje'), kp(`${t.min}/${t.normal}/${t.max}`, 'mín/normal/máx'), kp(t.scheduled, 'agendados'), kp(t.stock, 'no estoque'), kp(t.produced, 'produzidos (todas)')),
       t.reasons.length ? h('p', { class: 'muted' }, 'Ajuste: ' + t.reasons.join('; ')) : null, h('p', { class: 'muted' }, 'Próximos: ' + (t.next.map(fmtT).join(' · ') || '—')))),
-    h('div', { class: 'card' }, h('h3', {}, 'Sistema'), h('div', { class: 'grid' }, kp(s.cpu + '%', 'CPU'), kp(s.mem.percent + '%', 'Memória'), kp(`${s.workers.busy.length}/${s.workers.target}`, 'workers ativos/alvo'), kp(s.queue.pending, 'fila'), kp(s.queue.running, 'rodando'), kp(s.failed_jobs, 'falhas (fila de falhas)')),
+    h('div', { class: 'card' }, h('h3', {}, 'Sistema'), h('div', { class: 'grid' }, kp(s.cpu == null ? 'N/D' : s.cpu + '%', 'CPU'), kp(s.mem.percent == null ? 'N/D' : s.mem.percent + '%', 'Memória'), kp(`${s.workers.busy.length}/${s.workers.target}`, 'workers ativos/alvo'), kp(s.queue.pending, 'fila'), kp(s.queue.running, 'rodando'), kp(s.failed_jobs, 'falhas (fila de falhas)')),
       h('p', { class: 'muted' }, `Disco livre ${fmtB(st.disk_free)} · produção ${fmtB(st.production_bytes)} · clipes ${fmtB(st.clips_bytes)} · backups ${fmtB(st.backups_bytes)}`), h('div', { class: 'bar' }, h('i', { style: `width:${Math.min(100, 100 * (1 - st.disk_free / st.disk_total)).toFixed(0)}%` })),
       h('p', { class: 'muted' }, `Cota YouTube hoje: ${s.quota_youtube.used}/${s.quota_youtube.limit}`)),
     h('div', { class: 'card' }, h('h3', {}, 'Acervo antigo'), h('div', { class: 'grid' }, kp(s.archive.found, 'encontrados'), kp(s.archive.analyzed, 'analisados'), kp(s.archive.clips, 'clipes gerados'), kp(s.archive.awaiting, 'aguardando')), h('p', { class: 'muted' }, 'Já aproveitados: ' + (s.archive.used.join(' | ') || '—'))),
@@ -103,7 +103,7 @@ async function pollRT() {
 async function vFontes() {
   const rows = await api('/api/sources');
   const plat = h('select', {}, ...['youtube', 'twitch', 'instagram', 'url'].map(x => h('option', { value: x }, x === 'instagram' ? 'instagram (sua conta)' : x === 'url' ? 'URL avulsa' : x)));
-  const name = h('input', { placeholder: 'Nome (ex.: Meu canal)' }), ref = h('input', { placeholder: 'Canal/@handle/UC… | login Twitch | URL https' }), iv = h('input', { type: 'number', value: 300, min: 60 }), ck = h('input', { type: 'checkbox' });
+  const name = h('input', { placeholder: 'Nome (ex.: Meu canal)' }), ref = h('input', { placeholder: 'YouTube: canal/@handle/UC… ou link de vídeo | Twitch: login | URL: https' }), iv = h('input', { type: 'number', value: 300, min: 60 }), ck = h('input', { type: 'checkbox' });
   return [h('div', { class: 'card' }, h('h3', {}, 'Cadastrar fonte'), plat, name, ref, h('label', {}, 'Intervalo de monitoramento (s)'), iv,
     h('label', { class: 'ck' }, ck, 'Declaro que o conteúdo desta fonte é meu ou tenho autorização para cortá-lo e republicá-lo'),
     h('button', { class: 'b', onclick: () => act(() => api('/api/sources', { method: 'POST', body: { platform: plat.value, name: name.value, ref: ref.value, interval_s: +iv.value, authorized: ck.checked } }), 'Fonte cadastrada') }, 'Cadastrar')),

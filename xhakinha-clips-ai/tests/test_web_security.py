@@ -187,3 +187,151 @@ def test_every_button_endpoint_exists(server, admin):
     for p in sorted(paths):
         r = admin.get(server + p.rstrip("/"))
         assert r.status_code != 404 or p.endswith("/"), p       # 405 (método) é aceitável; 404 não
+
+def test_individual_youtube_video_registers_content_and_acquire(server, admin, engine, monkeypatch):
+    from xhakinha.sources import youtube as youtube_module
+    from xhakinha.sources.base import ContentInfo
+
+    video_id = "AbCdEf12345"
+    info = ContentInfo(
+        ext_id=video_id,
+        title="Vídeo individual de teste",
+        url=f"https://www.youtube.com/watch?v={video_id}",
+        kind="vod",
+        duration=123.0,
+    )
+
+    class FakeYouTubeConnector:
+        def __init__(self, source, settings, db):
+            self.source = source
+
+        def discover(self, known):
+            assert known == {}
+            return [info]
+
+    monkeypatch.setattr(youtube_module, "YouTubeConnector", FakeYouTubeConnector)
+
+    response = admin.post(
+        server + "/api/sources",
+        json={
+            "platform": "youtube",
+            "name": "Vídeo individual",
+            "ref": f"https://youtu.be/{video_id}?t=12",
+            "authorized": True,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    source = engine.db.one(
+        "SELECT * FROM sources WHERE id=?",
+        (response.json()["id"],),
+    )
+    assert source["platform"] == "youtube"
+    assert source["ref"] == f"https://www.youtube.com/watch?v={video_id}"
+
+    content = engine.db.one(
+        "SELECT * FROM contents WHERE source_id=? AND ext_id=?",
+        (source["id"], video_id),
+    )
+    assert content is not None
+    assert content["kind"] == "vod"
+    assert content["status"] == "queued"
+    assert content["url"] == info.url
+
+    job = engine.db.one(
+        "SELECT * FROM jobs WHERE type='acquire' AND content_id=?",
+        (content["id"],),
+    )
+    assert job is not None
+    assert job["dedupe_key"] == f"acquire:{content['id']}"
+    assert json.loads(job["payload"])["content_id"] == content["id"]
+
+
+def test_individual_youtube_video_unavailable_does_not_create_source(server, admin, engine, monkeypatch):
+    from xhakinha.sources import youtube as youtube_module
+
+    class UnavailableYouTubeConnector:
+        def __init__(self, source, settings, db):
+            pass
+
+        def discover(self, known):
+            return []
+
+    monkeypatch.setattr(youtube_module, "YouTubeConnector", UnavailableYouTubeConnector)
+
+    response = admin.post(
+        server + "/api/sources",
+        json={
+            "platform": "youtube",
+            "name": "Vídeo indisponível",
+            "ref": "https://youtu.be/AbCdEf12345",
+            "authorized": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert "vídeo não encontrado" in response.json()["error"].lower()
+    assert engine.db.one(
+        "SELECT COUNT(*) n FROM sources WHERE platform='youtube'"
+    )["n"] == 0
+    assert engine.db.one(
+        "SELECT COUNT(*) n FROM contents"
+    )["n"] == 0
+
+
+def test_individual_youtube_video_duplicate_detected_across_url_formats(server, admin, engine, monkeypatch):
+    from xhakinha.sources import youtube as youtube_module
+    from xhakinha.sources.base import ContentInfo
+
+    video_id = "AbCdEf12345"
+    calls = []
+
+    info = ContentInfo(
+        ext_id=video_id,
+        title="Vídeo duplicado de teste",
+        url=f"https://www.youtube.com/watch?v={video_id}",
+        kind="vod",
+        duration=123.0,
+    )
+
+    class FakeYouTubeConnector:
+        def __init__(self, source, settings, db):
+            pass
+
+        def discover(self, known):
+            calls.append(1)
+            return [info]
+
+    monkeypatch.setattr(youtube_module, "YouTubeConnector", FakeYouTubeConnector)
+
+    first = admin.post(
+        server + "/api/sources",
+        json={
+            "platform": "youtube",
+            "name": "Primeiro cadastro",
+            "ref": f"https://youtu.be/{video_id}",
+            "authorized": True,
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    second = admin.post(
+        server + "/api/sources",
+        json={
+            "platform": "youtube",
+            "name": "Cadastro repetido",
+            "ref": f"https://www.youtube.com/watch?v={video_id}",
+            "authorized": True,
+        },
+    )
+
+    assert second.status_code == 400
+    assert "já está cadastrado" in second.json()["error"].lower()
+    assert len(calls) == 1
+    assert engine.db.one(
+        "SELECT COUNT(*) n FROM sources WHERE platform='youtube'"
+    )["n"] == 1
+    assert engine.db.one(
+        "SELECT COUNT(*) n FROM contents"
+    )["n"] == 1
