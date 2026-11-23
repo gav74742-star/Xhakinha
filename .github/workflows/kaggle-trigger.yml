@@ -1,0 +1,44 @@
+name: kaggle-trigger
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: kaggle-trigger
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    defaults:
+      run:
+        working-directory: xhakinha-clips-ai
+
+    env:
+      XH_COORD_URL: ${{ secrets.XH_COORD_URL }}
+      XH_ADMIN_TOKEN: ${{ secrets.XH_ADMIN_TOKEN }}
+      KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+      KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+      PYTHONPATH: ${{ github.workspace }}/xhakinha-clips-ai
+
+    steps:
+      - name: Baixar repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependências
+        run: pip install kaggle requests
+
+      - name: Avaliar e iniciar sessão Kaggle
+        run: python scripts/kaggle_trigger.py

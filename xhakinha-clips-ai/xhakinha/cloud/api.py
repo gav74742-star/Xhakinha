@@ -65,6 +65,7 @@ def create_app(coord: Coordinator, exec_token: str, admin_token: str) -> Starlet
     routes.append(Route("/api/state", guard(lambda r, b: coord.state(), admin=False), methods=["GET"]))
     routes.append(Route("/api/admin/retry/{tid}", guard(lambda r, b: (coord.retry_dead(r.path_params["tid"]), {"ok": True})[1], admin=True), methods=["POST"]))
     routes.append(Route("/api/admin/reconcile", guard(lambda r, b: coord.reconcile(), admin=True), methods=["POST"]))
+    routes.append(Route("/api/admin/reap", guard(lambda r, b: coord.reap(), admin=True), methods=["POST"]))
     routes.append(Route("/api/health", lambda r: JSONResponse({"ok": True, **coord.integrity()})))
     routes.append(Route("/", lambda r: FileResponse(DASH / "index.html")))
     return Starlette(routes=routes)

@@ -523,13 +523,19 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
                   "metrics_note": "TikTok/Instagram só informam o que as APIs oficiais permitem; posts privados do TikTok (app não auditado) não têm métricas."})
 
     async def backup_create(request: Request):
+        if db.backend == "turso":
+            return J({"error": "backup SQLite local indisponível no backend Turso"}, 409)
         p = eng.st.backup_db()
         return J({"name": p.name})
 
     async def backup_list(request: Request):
+        if db.backend == "turso":
+            return J([])
         return J(sorted([{"name": f.name, "size": f.stat().st_size} for f in s.backup_dir.glob("xhakinha-*.db")], key=lambda x: x["name"], reverse=True))
 
     async def backup_get(request: Request):
+        if db.backend == "turso":
+            return J({"error": "backup SQLite local indisponível no backend Turso"}, 409)
         name = request.path_params["name"]
         f = s.backup_dir / name
         if not re.fullmatch(r"xhakinha-[0-9\-]+\.db", name) or not f.is_file():

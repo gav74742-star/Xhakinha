@@ -17,7 +17,7 @@ from ..config import Settings
 from ..engine import Engine
 from ..retry import NotReadyYet, PermanentError, TransientError
 from .. import scheduler
-from ..storage import sha256_file
+from ..storage import sha256_file, quick_fingerprint
 from .coordinator import Fenced
 from .drive_storage import DriveBackend, DriveFull, IntegrityError
 from .journal import PubJournal
@@ -138,10 +138,26 @@ class Brain:
         if self.clock() < self.drive_full_until:
             return 0
         try:
-            for c in db.q("SELECT id,fingerprint,local_path FROM contents WHERE local_path IS NOT NULL AND fingerprint IS NOT NULL AND drive_path IS NULL"):
+            for c in db.q("SELECT id,fingerprint,local_path,duration FROM contents WHERE local_path IS NOT NULL AND fingerprint IS NOT NULL AND drive_path IS NULL"):
                 p = Path(c["local_path"])
                 if not p.is_file() or not self.still_owner():
                     continue
+                try:
+                    actual = quick_fingerprint(p, c["duration"])
+                except OSError as e:
+                    db.event(
+                        "warn", "drive",
+                        f"leitura do original {c['id']} falhou; upload adiado: {e}"
+                    )
+                    continue
+
+                if actual != c["fingerprint"]:
+                    db.event(
+                        "error", "integrity",
+                        f"original {c['id']} diverge do fingerprint registrado; upload bloqueado"
+                    )
+                    continue
+
                 dp = f"originals/{c['fingerprint'][:32]}{p.suffix}"
                 try:
                     self.drive.upload(p, dp)
@@ -169,6 +185,95 @@ class Brain:
         return n
 
     # ------------------------------------------------------------ reidratação de clipes
+    def rehydrate_original(self, content: dict) -> str:
+        """Restaura o original do Drive após validar seu fingerprint.
+        Retorna: present | restored | retry | missing | corrupt.
+        Nunca altera nem remove a cópia remota.
+        """
+        db, st = self.engine.db, self.engine.st
+        cid = content["id"]
+        fingerprint = content.get("fingerprint")
+        drive_path = content.get("drive_path")
+        duration = content.get("duration")
+
+        if not fingerprint or not drive_path:
+            db.event("error", "rehydrate",
+                     f"original {cid} sem fingerprint ou cópia registrada no Drive")
+            return "missing"
+
+        current = Path(content.get("local_path") or "")
+        if content.get("local_path") and current.is_file():
+            try:
+                if quick_fingerprint(current, duration) == fingerprint:
+                    return "present"
+            except OSError:
+                pass
+
+        try:
+            info = self.drive.stat(drive_path)
+        except TransientError as e:
+            db.event("warn", "rehydrate",
+                     f"consulta do original {cid} falhou: {e}")
+            return "retry"
+        except PermanentError as e:
+            db.event("error", "rehydrate",
+                     f"original {cid} indisponível no Drive: {e}")
+            return "missing"
+
+        if not info:
+            db.event("error", "rehydrate",
+                     f"original {cid} ausente no Drive: {drive_path}")
+            return "missing"
+
+        size = int(info.get("size") or 0)
+        if not st.has_space(size):
+            db.event("warn", "rehydrate",
+                     f"sem espaço local para restaurar original {cid}")
+            return "retry"
+
+        ext = Path(drive_path).suffix.lstrip(".") or "mp4"
+        dest = st.download_path(cid, ext)
+        temp = dest.with_name(dest.name + ".rehydrate")
+        part = temp.with_suffix(temp.suffix + ".part")
+
+        try:
+            self.drive.download(drive_path, temp)
+
+            if quick_fingerprint(temp, duration) != fingerprint:
+                db.event("error", "rehydrate",
+                         f"fingerprint divergente no original {cid}; download descartado")
+                return "corrupt"
+
+            temp.replace(dest)
+            db.x(
+                "UPDATE contents SET local_path=? WHERE id=?",
+                (str(dest), cid),
+            )
+            self.report["originals_rehydrated"] = (
+                self.report.get("originals_rehydrated", 0) + 1
+            )
+            return "restored"
+
+        except IntegrityError as e:
+            db.event("error", "rehydrate",
+                     f"original {cid} corrompido no Drive: {e}")
+            return "corrupt"
+        except TransientError as e:
+            db.event("warn", "rehydrate",
+                     f"restauração do original {cid} será repetida: {e}")
+            return "retry"
+        except PermanentError as e:
+            db.event("error", "rehydrate",
+                     f"original {cid} indisponível: {e}")
+            return "missing"
+        except OSError as e:
+            db.event("warn", "rehydrate",
+                     f"falha local ao restaurar original {cid}: {e}")
+            return "retry"
+        finally:
+            temp.unlink(missing_ok=True)
+            part.unlink(missing_ok=True)
+
     def rehydrate_clip(self, clip: dict) -> str:
         """Garante o arquivo local do clipe a partir do Drive. Mantém id/registros; confere sha256; não reenvia nada.
         Retorna: present | restored | retry | no_drive_copy | missing | corrupt."""
@@ -231,42 +336,184 @@ class Brain:
         pl = self.engine.pl
         local = pl.h_process
 
+        def fallback_local(job: dict, cid: int, c: dict, reason: str):
+            current = pl.db.one(
+                "SELECT * FROM contents WHERE id=?", (cid,)
+            )
+            if current:
+                c = dict(current)
+
+            local_path = c.get("local_path")
+            local_exists = bool(
+                local_path and Path(local_path).is_file()
+            )
+
+            if c.get("drive_path"):
+                # Validar também arquivos locais existentes, pois podem
+                # estar incompletos ou corrompidos.
+                result = self.rehydrate_original(c)
+
+                if result == "retry":
+                    raise NotReadyYet(
+                        f"restauração do original {cid} pendente; "
+                        "fallback local adiado",
+                        retry_after=300,
+                    )
+
+                if result in ("missing", "corrupt"):
+                    raise PermanentError(
+                        f"original {cid} irrecuperável no Drive: {result}"
+                    )
+
+                if result not in ("restored", "present"):
+                    raise PermanentError(
+                        f"estado inesperado na restauração do original "
+                        f"{cid}: {result}"
+                    )
+
+                current = pl.db.one(
+                    "SELECT * FROM contents WHERE id=?", (cid,)
+                )
+                if not current:
+                    raise PermanentError(
+                        f"conteúdo {cid} desapareceu após restaurar o original"
+                    )
+                c = dict(current)
+
+            elif not local_exists:
+                raise PermanentError(
+                    f"original {cid} indisponível: sem cópia local ou no Drive"
+                )
+
+            self.report["fallback_local"] += 1
+            pl.db.event(
+                "warn", "remote",
+                f"processamento remoto de {cid} indisponível "
+                f"({reason}); usando o próprio executor"
+            )
+            return local(job)
+
         def h_process(job: dict):
             cid = job["payload"]["content_id"]
-            c = pl.db.one("SELECT * FROM contents WHERE id=?", (cid,))
-            if not c or not c["local_path"] or not c["fingerprint"] or not Path(c["local_path"]).is_file():
+            row = pl.db.one(
+                "SELECT * FROM contents WHERE id=?", (cid,)
+            )
+            if not row:
                 return local(job)
-            key = c["fingerprint"][:32]
-            dp = c.get("drive_path") or f"originals/{key}{Path(c['local_path']).suffix}"
-            try:
-                if not c.get("drive_path"):
-                    self.drive.upload(Path(c["local_path"]), dp)
-                    pl.db.x("UPDATE contents SET drive_path=? WHERE id=?", (dp, cid))
-            except (TransientError, PermanentError) as e:
-                pl.db.event("warn", "remote", f"original {cid} não está no Drive ({e}); processando localmente")
+
+            c = dict(row)
+            fingerprint = c.get("fingerprint")
+            if not fingerprint:
                 return local(job)
+
+            key = fingerprint[:32]
+            local_path = c.get("local_path")
+            local_exists = bool(
+                local_path and Path(local_path).is_file()
+            )
+            dp = c.get("drive_path")
+
+            # O executor remoto pode baixar diretamente do Drive.
+            if not dp:
+                if not local_exists:
+                    return local(job)
+
+                try:
+                    actual = quick_fingerprint(
+                        Path(local_path), c.get("duration")
+                    )
+                except OSError as e:
+                    raise TransientError(
+                        f"não foi possível validar o original {cid}; "
+                        f"upload adiado: {e}"
+                    ) from e
+
+                if actual != fingerprint:
+                    pl.db.event(
+                        "error", "integrity",
+                        f"original {cid} diverge do fingerprint registrado; "
+                        "processamento remoto bloqueado"
+                    )
+                    raise PermanentError(
+                        f"original {cid} corrompido ou alterado localmente; "
+                        "fingerprint divergente"
+                    )
+
+                dp = f"originals/{key}{Path(local_path).suffix}"
+                try:
+                    self.drive.upload(Path(local_path), dp)
+                    pl.db.x(
+                        "UPDATE contents SET drive_path=? WHERE id=?",
+                        (dp, cid),
+                    )
+                except (TransientError, PermanentError) as e:
+                    pl.db.event(
+                        "warn", "remote",
+                        f"original {cid} não está no Drive ({e}); "
+                        "processando localmente"
+                    )
+                    return local(job)
+
             tkey = f"process:{key}"
             t = self.client.get_by_key(tkey)
+
             if t is None:
                 cfg = pl.db.all_settings()
-                used = [(r["start"], r["end"]) for r in pl.db.q("SELECT start,end FROM segments_used WHERE content_id=? OR fingerprint=?", (cid, c["fingerprint"]))]
+                used = [
+                    (r["start"], r["end"])
+                    for r in pl.db.q(
+                        "SELECT start,end FROM segments_used "
+                        "WHERE content_id=? OR fingerprint=?",
+                        (cid, fingerprint),
+                    )
+                ]
                 from .. import learning
                 weights, _ = learning.learned_weights(pl.db)
-                self.client.submit("process_content", {
-                    "content_key": key, "drive_path": dp, "sha256": None, "cfg": cfg, "used": used, "weights": weights,
-                    "max_clips": job["payload"].get("max_clips"), "whisper": pl.s.whisper_enabled, "whisper_model": pl.s.whisper_model},
-                    key=tkey, priority=6, prefer=["kaggle-gpu", "colab"], est_seconds=max(300.0, (c["duration"] or 600) * 0.6))
+
+                self.client.submit(
+                    "process_content",
+                    {
+                        "content_key": key,
+                        "drive_path": dp,
+                        "sha256": None,
+                        "cfg": cfg,
+                        "used": used,
+                        "weights": weights,
+                        "max_clips": job["payload"].get("max_clips"),
+                        "whisper": pl.s.whisper_enabled,
+                        "whisper_model": pl.s.whisper_model,
+                    },
+                    key=tkey,
+                    priority=6,
+                    prefer=["kaggle-gpu", "colab"],
+                    est_seconds=max(
+                        300.0, (c["duration"] or 600) * 0.6
+                    ),
+                )
                 t = self.client.get_by_key(tkey)
+
             st = t["status"]
+
             if st == "done":
                 return self._ingest(c, json.loads(t["result"]))
-            if st in ("dead", "cancelled") or (st == "queued" and self.clock() - t["created"] > self.remote_wait_s):
+
+            if st in ("dead", "cancelled") or (
+                st == "queued"
+                and self.clock() - t["created"] > self.remote_wait_s
+            ):
                 if st == "queued" and not self.client.cancel_if_queued(tkey):
-                    raise NotReadyYet("tarefa remota acabou de ser assumida por outro executor", retry_after=60)
-                self.report["fallback_local"] += 1
-                pl.db.event("warn", "remote", f"processamento remoto de {cid} indisponível ({st}); usando o próprio executor")
-                return local(job)
-            raise NotReadyYet(f"processamento remoto em andamento ({st})", retry_after=120)
+                    raise NotReadyYet(
+                        "tarefa remota acabou de ser assumida "
+                        "por outro executor",
+                        retry_after=60,
+                    )
+
+                return fallback_local(job, cid, c, st)
+
+            raise NotReadyYet(
+                f"processamento remoto em andamento ({st})",
+                retry_after=120,
+            )
 
         pl.h_process = h_process
 
