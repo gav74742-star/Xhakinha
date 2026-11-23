@@ -1,4 +1,4 @@
-"""Fila persistente (SQLite). Sobrevive a reinícios; vários workers/processos podem consumir."""
+"""Fila persistente (SQLite local ou Turso). Sobrevive a reinícios; vários workers/processos podem consumir."""
 from __future__ import annotations
 
 import json
@@ -33,20 +33,21 @@ class JobQueue:
 
     def claim(self, worker: str, types: list[str] | None = None, now: float | None = None) -> dict | None:
         now = now or time.time()
-        with self.db.tx() as c:
-            where, args = "status='pending' AND run_at<=?", [now]
-            if types:
-                where += " AND type IN (%s)" % ",".join("?" * len(types))
-                args += types
-            row = c.execute(f"SELECT * FROM jobs WHERE {where} ORDER BY priority ASC, run_at ASC LIMIT 1", args).fetchone()
-            if not row:
-                return None
-            c.execute("UPDATE jobs SET status='running', locked_by=?, locked_at=?, attempts=attempts+1, updated=? WHERE id=?",
-                      (worker, now, now, row["id"]))
-            job = dict(row)
-            job["attempts"] += 1
-            job["payload"] = json.loads(job["payload"] or "{}")
-            return job
+        # UM único comando atômico (funciona igual em SQLite local e no Turso, sem transação interativa):
+        # escolhe o job mais antigo e já o marca como running; dois consumidores nunca pegam o mesmo job.
+        where, args = "status='pending' AND run_at<=?", [now]
+        if types:
+            where += " AND type IN (%s)" % ",".join("?" * len(types))
+            args += types
+        rows = self.db.q(
+            "UPDATE jobs SET status='running', locked_by=?, locked_at=?, attempts=attempts+1, updated=? "
+            f"WHERE status='pending' AND id=(SELECT id FROM jobs WHERE {where} ORDER BY priority ASC, run_at ASC LIMIT 1) "
+            "RETURNING *", [worker, now, now] + args)
+        if not rows:
+            return None
+        job = dict(rows[0])
+        job["payload"] = json.loads(job["payload"] or "{}")
+        return job
 
     def done(self, job_id: int) -> None:
         self.db.x("UPDATE jobs SET status='done', updated=?, locked_by=NULL WHERE id=?", (time.time(), job_id))

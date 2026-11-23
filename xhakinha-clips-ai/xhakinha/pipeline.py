@@ -28,8 +28,7 @@ class Pipeline:
         self.cleaner = Cleaner(st)
         self.pubs = publishers or {"tiktok": TikTokPublisher(s, db), "instagram": InstagramPublisher(s, db)}
         self.detector = analysis.haar_faces          # injetável nos testes
-        self.clip_fetcher = None                     # nuvem: recuperação de clipes
-        self.original_fetcher = None                 # nuvem: recuperação de originais
+        self.clip_fetcher = None                     # nuvem: callable(clip)->"present|restored|retry|missing|corrupt|no_drive_copy"
 
     def ingest_paused(self) -> bool:
         """True quando o armazenamento (Drive) está no limite: NOVAS ingestões param; publicações e clipes já em estoque seguem."""
@@ -86,7 +85,26 @@ class Pipeline:
                           (i.live_state, i.ended_at, i.duration, i.title or row["title"], row["id"]))
             if i.live_state in ("live", "upcoming"):
                 continue
-            if row["status"] in ("processed", "queued", "downloading", "downloaded", "analyzing", "skipped"):
+            if row["status"] == "queued":
+                if authorized:
+                    existing = self.db.one(
+                        "SELECT id FROM jobs WHERE type=? AND content_id=? AND status IN ('pending','running') LIMIT 1",
+                        ("acquire", row["id"]),
+                    )
+                    if not existing:
+                        was_live = prev_live in ("live", "upcoming") or i.kind == "live" or bool(i.meta.get("stream_id"))
+                        delay = random.uniform(dmin, dmax) * 60 if was_live else 0
+                        self.q.enqueue(
+                            "acquire",
+                            {"content_id": row["id"], "deadline": now + 48 * 3600},
+                            run_at=now + delay,
+                            priority=3,
+                            dedupe_key=f"acquire:{row['id']}",
+                            content_id=row["id"],
+                            max_attempts=8,
+                        )
+                continue
+            if row["status"] in ("processed", "downloading", "downloaded", "analyzing", "skipped"):
                 continue
             if i.kind == "live" and i.live_state == "ended" and i.ext_id.startswith("stream:"):
                 self.db.x("UPDATE contents SET status='skipped', error='aguardando VOD (substituído por video:*)' WHERE id=?", (row["id"],))
@@ -173,42 +191,12 @@ class Pipeline:
     # ------------------------------------------------------------ processar
     def process_content(self, cid: int, max_clips: int | None = None, origin: str | None = None) -> list[int]:
         c = self.db.one("SELECT * FROM contents WHERE id=?", (cid,))
-        if not c:
-            raise PermanentError(f"conteúdo {cid} não encontrado")
-
         path = Path(c["local_path"] or "")
         if not path.is_file():
-            result = self.original_fetcher(c) if self.original_fetcher else "no_drive_copy"
-
-            if result in ("present", "restored"):
-                c = self.db.one("SELECT * FROM contents WHERE id=?", (cid,))
-                path = Path(c["local_path"] or "") if c else Path("")
-            elif result == "retry":
-                raise NotReadyYet(
-                    "original em recuperação no Drive; processamento aguardará",
-                    retry_after=300,
-                )
-            elif result in ("missing", "corrupt"):
-                raise PermanentError(
-                    f"original {cid}: cópia do Drive {result}; verificar armazenamento"
-                )
-
-            if not path.is_file():
-                self.db.x(
-                    "UPDATE contents SET status='queued' WHERE id=?",
-                    (cid,),
-                )
-                self.q.enqueue(
-                    "acquire",
-                    {"content_id": cid},
-                    dedupe_key=f"acquire:{cid}",
-                    content_id=cid,
-                    priority=4,
-                )
-                raise NotReadyYet(
-                    "original ausente e sem cópia recuperável; reaquisição agendada",
-                    retry_after=600,
-                )
+            # original ausente: reaquisição (sem desperdiçar retentativa de processamento)
+            self.db.x("UPDATE contents SET status='queued', local_path=NULL WHERE id=?", (cid,))
+            self.q.enqueue("acquire", {"content_id": cid}, dedupe_key=f"acquire:{cid}", content_id=cid, priority=4)
+            raise NotReadyYet("original ausente; reaquisição agendada", retry_after=600)
         self.db.x("UPDATE contents SET status='analyzing', error=NULL WHERE id=?", (cid,))
         try:
             meta = probe(path)

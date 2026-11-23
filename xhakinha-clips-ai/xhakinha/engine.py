@@ -158,10 +158,7 @@ class Engine:
             self.plan_archive(now)
         if self._every("cleanup", 900):
             self.q.enqueue("cleanup", dedupe_key="cleanup", max_attempts=2, priority=9)
-        if (
-            not self.db.is_remote
-            and self._every("backup", float(self.db.get("backup_every_h")) * 3600)
-        ):
+        if self._every("backup", float(self.db.get("backup_every_h")) * 3600):
             self.q.enqueue("backup", dedupe_key="backup", max_attempts=2, priority=9)
 
     def plan_archive(self, now: float) -> None:

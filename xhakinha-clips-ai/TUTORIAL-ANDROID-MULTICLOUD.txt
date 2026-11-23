@@ -55,6 +55,10 @@ ETAPA 3 — Cloudflare (coordenador sempre ligado)
  (Se o wrangler não funcionar no seu Termux, use o editor de Worker no painel da Cloudflare e cole os arquivos core.js, worker.js e
   entry.js; me avise que adapto — este caminho NÃO foi testado.)
 
+ETAPA 3B — Turso (banco único compartilhado). Ver docs/TURSO.md para o passo a passo completo e os comandos do Termux.
+ Resumo: token de ESCRITA no Turso -> mesmas TURSO_DATABASE_URL/TURSO_AUTH_TOKEN no Render e nos Secrets do Kaggle ->
+ python scripts/turso_check.py (tem que dar TUDO OK) -> python scripts/turso_migrate.py init -> só então rodar o runner.
+
 ETAPA 4 — Kaggle
  1. kaggle.com → Register. Em Settings → Phone Verification: verifique o telefone (necessário para Internet e GPU).
  2. Notebooks → New Notebook → File → Import → "GitHub" (ou Upload) e use notebooks/kaggle_worker.ipynb.

@@ -153,8 +153,12 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
     # ---------------------------------------------------------------- status
     def deps() -> dict:
         import shutil as sh
+        try:
+            face_detector = bool(analysis.face_detector_ok())
+        except (ImportError, OSError):
+            face_detector = False
         return {"ffmpeg": bool(sh.which("ffmpeg")), "yt_dlp": ytdlp.check_available(), "whisper": analysis.whisper_available(),
-                "face_detector": analysis.face_detector_ok(), "ollama": bool(s.ollama_url),
+                "face_detector": face_detector, "ollama": bool(s.ollama_url),
                 "public_url_https": s.public_base_url.startswith("https://"),
                 "keys": {"youtube": bool(s.youtube_api_key), "twitch": bool(s.twitch_client_id), "tiktok": bool(s.tiktok_client_key)}}
 
@@ -169,11 +173,19 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
         clip_counts = {r["status"]: r["n"] for r in db.q("SELECT status, COUNT(*) n FROM clips GROUP BY status")}
         pub_counts = {r["status"]: r["n"] for r in db.q("SELECT status, COUNT(*) n FROM publications GROUP BY status")}
         _, info = learning.learned_weights(db)
-        vm = psutil.virtual_memory()
+        try:
+            vm = psutil.virtual_memory()
+            mem = {"percent": vm.percent, "available": vm.available}
+        except (OSError, psutil.Error):
+            mem = {"percent": None, "available": None}
+        try:
+            cpu = psutil.cpu_percent(interval=None)
+        except (OSError, psutil.Error):
+            cpu = None
         return J({"version": __version__, "now": now, "tz": s.timezone, "engine": db.get("engine_state"),
                   "workers": {"target": eng.target_workers, "max": s.max_workers, "busy": list(eng.busy.values())},
                   "queue": eng.q.counts(), "platforms": plats, "clips": clip_counts, "publications": pub_counts,
-                  "storage": eng.st.usage(), "cpu": psutil.cpu_percent(interval=None), "mem": {"percent": vm.percent, "available": vm.available},
+                  "storage": eng.st.usage(), "cpu": cpu, "mem": mem,
                   "deps": deps(), "learning": info,
                   "quota_youtube": {"used": __import__("xhakinha.sources.quota", fromlist=["Quota"]).Quota(db, "youtube", s.youtube_daily_quota).used(), "limit": s.youtube_daily_quota},
                   "contents": {r["status"]: r["n"] for r in db.q("SELECT status, COUNT(*) n FROM contents GROUP BY status")},
@@ -212,11 +224,44 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
             ytdlp.validate_url(ref)
         if not d.get("authorized"):
             raise ValueError("Marque a declaração: o conteúdo é seu ou você tem autorização para cortá-lo e republicá-lo")
+
+        video_infos = None
+        if plat == "youtube":
+            from ..sources.youtube import extract_video_id
+            video_id = extract_video_id(ref)
+            if video_id:
+                video_ref = f"https://www.youtube.com/watch?v={video_id}"
+
+                # Detecta o mesmo vídeo em qualquer formato de URL já cadastrado.
+                for row in db.q("SELECT id,ref FROM sources WHERE platform='youtube'"):
+                    if extract_video_id(row["ref"]) == video_id:
+                        raise ValueError("este vídeo já está cadastrado")
+
+                from ..sources import make_connector
+                temporary_source = {
+                    "id": 0,
+                    "platform": "youtube",
+                    "name": name,
+                    "ref": video_ref,
+                    "enabled": 1,
+                    "authorized": 1,
+                    "config": "{}",
+                }
+                video_infos = make_connector(temporary_source, s, db).discover({})
+                if not video_infos:
+                    raise ValueError("vídeo não encontrado ou indisponível")
+                ref = video_ref
+
         try:
             sid = db.x("INSERT INTO sources(platform,name,ref,enabled,authorized,interval_s,created) VALUES(?,?,?,?,?,?,?)",
                        (plat, name, ref, 1, 1, max(60, int(d.get("interval_s", 300))), time.time()))
         except Exception:
             raise ValueError("fonte já cadastrada")
+
+        if video_infos is not None:
+            src = db.one("SELECT * FROM sources WHERE id=?", (sid,))
+            eng.pl._ingest(src, video_infos, {})
+
         if plat == "url":
             from ..sources import make_connector
             for i in make_connector(db.one("SELECT * FROM sources WHERE id=?", (sid,)), s, db).discover({}):
@@ -478,18 +523,18 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
                   "metrics_note": "TikTok/Instagram só informam o que as APIs oficiais permitem; posts privados do TikTok (app não auditado) não têm métricas."})
 
     async def backup_create(request: Request):
-        if db.is_remote:
+        if db.backend == "turso":
             return J({"error": "backup SQLite local indisponível no backend Turso"}, 409)
         p = eng.st.backup_db()
         return J({"name": p.name})
 
     async def backup_list(request: Request):
-        if db.is_remote:
+        if db.backend == "turso":
             return J([])
         return J(sorted([{"name": f.name, "size": f.stat().st_size} for f in s.backup_dir.glob("xhakinha-*.db")], key=lambda x: x["name"], reverse=True))
 
     async def backup_get(request: Request):
-        if db.is_remote:
+        if db.backend == "turso":
             return J({"error": "backup SQLite local indisponível no backend Turso"}, 409)
         name = request.path_params["name"]
         f = s.backup_dir / name
@@ -508,7 +553,16 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
         return FileResponse(p["file_path"], media_type="video/mp4")
 
     async def health(request: Request):
-        return J({"ok": True})
+        try:
+            version = db.get("schema_version")
+            return J({
+                "ok": True,
+                "database": "ok",
+                "backend": db.backend,
+                "schema_version": version,
+            })
+        except Exception:
+            return J({"ok": False, "database": "error"}, 503)
 
     async def index(request: Request):
         return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})

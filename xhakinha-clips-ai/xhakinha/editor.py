@@ -141,7 +141,13 @@ def render_clip(src: Path, dest: Path, start: float, dur: float, info: dict | No
         args += ["-an"]
     args += ["-c:v", "libx264", "-preset", PRESET, "-crf", "20", "-pix_fmt", "yuv420p", "-profile:v", "high",
              "-movflags", "+faststart", "-sn", "-dn", str(tmp)]
-    r = run(args, 3600)
+    # Compatibilidade entre versões novas e antigas do FFmpeg.
+    modern_args = args.copy()
+    modern_args[modern_args.index("-filter_complex_script")] = "-/filter_complex"
+    r = run(modern_args, 3600)
+    err = (r.stderr or "").lower()
+    if r.returncode != 0 and "unrecognized option" in err and "filter_complex" in err:
+        r = run(args, 3600)
     script.unlink(missing_ok=True)
     if r.returncode != 0:
         tmp.unlink(missing_ok=True)

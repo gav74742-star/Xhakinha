@@ -5,10 +5,16 @@ SECRETS do Kaggle (Notebook → Add-ons → Secrets). Nomes EXATOS:
   XH_COORD_URL            https://xhakinha-coord.SEUUSUARIO.workers.dev
   XH_COORD_TOKEN          o mesmo valor do segredo EXEC_TOKEN do Worker
   GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_REFRESH_TOKEN
+  TURSO_DATABASE_URL      libsql://SEU-BANCO.turso.io   (painel Turso > seu banco > Database URL)
+  TURSO_AUTH_TOKEN        token de ESCRITA do mesmo banco (NÃO use o token "read-only"; o Kaggle precisa gravar)
   YOUTUBE_API_KEY (opcional), TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET (opcional)
 Segredos do GitHub (Settings → Secrets → Actions) para o gatilho:
   XH_COORD_URL, XH_ADMIN_TOKEN, KAGGLE_USERNAME, KAGGLE_KEY
 Segredos do Worker (wrangler secret put): EXEC_TOKEN, ADMIN_TOKEN (valores longos e diferentes)
+
+BANCO (Turso): é a fonte ÚNICA de estado (fila, clipes, publicações, cota). Render e Kaggle usam as MESMAS duas variáveis
+(TURSO_DATABASE_URL e TURSO_AUTH_TOKEN). Com elas definidas o Xhakinha usa Turso; sem elas, volta ao SQLite local (rollback).
+Neste modo os snapshots do Drive são só BACKUP (nunca restaurados por cima do Turso). Veja docs/TURSO.md.
 
 ESTRUTURA NO DRIVE (criada automaticamente em "XHAKINHA_CLIPS_AI"):
   originals/  clips/pending/  clips/published/  clips/failed/  db/snapshots/  checkpoints/  logs/  exports/  tmp/

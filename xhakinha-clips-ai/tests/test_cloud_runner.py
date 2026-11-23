@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_notebooks_sao_json_valido_e_celulas_de_codigo_compilam():
-    for nbp in ("kaggle/kaggle_worker.ipynb", "notebooks/colab_worker.ipynb"):
+    for nbp in ("notebooks/colab_worker.ipynb",):
         nb = json.loads((ROOT / nbp).read_text())
         assert nb["nbformat"] == 4
         for c in nb["cells"]:
@@ -32,6 +32,12 @@ def test_notebooks_sao_json_valido_e_celulas_de_codigo_compilam():
                 compile("".join(c["source"]), nbp, "exec")
     meta = json.loads((ROOT / "kaggle/kernel-metadata.json").read_text())
     assert meta["code_file"] == "kaggle_worker.ipynb" and meta["enable_internet"] == "true" and meta["is_private"] == "true"
+    canonical = json.loads((ROOT / "kaggle/kaggle_worker.ipynb").read_text())
+    assert canonical["nbformat"] == 4
+    assert len(canonical["cells"]) == 32
+    for cell in canonical["cells"]:
+        if cell["cell_type"] == "code":
+            compile("".join(cell["source"]), "kaggle/kaggle_worker.ipynb", "exec")
 
 
 def test_provedor_detectado_pelo_ambiente():
@@ -46,14 +52,34 @@ def test_healthcheck_honesto():
     assert r["gpu"] is False and r["ffmpeg"] is True                   # este sandbox não tem GPU
 
 
-def test_gatilho_so_inicia_sem_cerebro_e_com_capacidade():
-    base = {"now": 1000, "locks": [], "executors": [], "providers": [{"name": "kaggle-gpu", "breaker": "closed", "paused": False,
-            "usage_s": {"week": 0}, "config": {"week_seconds": 97200, "safety": 0.9}}]}
+def test_gatilho_so_inicia_com_tarefa_gpu_elegivel():
+    tarefa = {
+        "id": "gpu-1", "status": "queued", "priority": 10,
+        "needs": '["gpu"]', "prefer": "[]", "est_seconds": 3000,
+        "run_after": 900, "created": 900,
+    }
+    base = {
+        "now": 1000, "locks": [], "executors": [], "tasks": [tarefa],
+        "providers": [{
+            "name": "kaggle-gpu", "breaker": "closed", "paused": False,
+            "usage_s": {"day": 0, "week": 0},
+            "config": {
+                "session_seconds": 39600, "week_seconds": 97200,
+                "safety": 0.9, "reserve_frac": 0.15, "known": True,
+            },
+        }],
+    }
+
     assert decide(base)[0]
+    assert not decide({**base, "tasks": []})[0]
+    assert not decide({**base, "tasks": [{**tarefa, "run_after": 1001}]})[0]
+    assert not decide({**base, "tasks": [{**tarefa, "needs": '["cpu"]'}]})[0]
+    assert not decide({**base, "tasks": [{**tarefa, "prefer": '["colab"]'}]})[0]
+    assert decide({**base, "tasks": [{**tarefa, "prefer": '["colab"]', "created": 0}]})[0]
     assert not decide({**base, "locks": [{"name": "brain", "owner": "x", "lease_until": 2000}]})[0]
     assert not decide({**base, "executors": [{"status": "active", "provider": "kaggle-cpu"}]})[0]
     assert not decide({**base, "providers": [{**base["providers"][0], "breaker": "open"}]})[0]
-    assert not decide({**base, "providers": [{**base["providers"][0], "usage_s": {"week": 90000}}]})[0]
+    assert not decide({**base, "providers": [{**base["providers"][0], "usage_s": {"day": 0, "week": 90000}}]})[0]
 
 
 def test_sessao_completa_cerebro_cria_snapshot_e_libera_lock(tmp_path, monkeypatch):

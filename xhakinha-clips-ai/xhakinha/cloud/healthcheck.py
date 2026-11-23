@@ -4,6 +4,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tempfile
 
 from .. import analysis
 
@@ -20,7 +21,7 @@ def gpu_info() -> dict:
 
 
 def local_report(drive=None) -> dict:
-    du = shutil.disk_usage("/tmp")
+    du = shutil.disk_usage(tempfile.gettempdir())
     rep = {"python": sys.version.split()[0], "ffmpeg": bool(shutil.which("ffmpeg")), "ffprobe": bool(shutil.which("ffprobe")),
            "whisper": analysis.whisper_available(), "faces": analysis.face_detector_ok(), "disk_free_gb": round(du.free / 1e9, 1),
            **gpu_info()}

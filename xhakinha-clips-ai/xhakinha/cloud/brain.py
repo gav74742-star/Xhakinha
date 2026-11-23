@@ -15,11 +15,9 @@ from pathlib import Path
 
 from ..config import Settings
 from ..engine import Engine
-from ..db import Store
 from ..retry import NotReadyYet, PermanentError, TransientError
 from .. import scheduler
-from ..media import probe
-from ..storage import quick_fingerprint, sha256_file
+from ..storage import sha256_file, quick_fingerprint
 from .coordinator import Fenced
 from .drive_storage import DriveBackend, DriveFull, IntegrityError
 from .journal import PubJournal
@@ -45,7 +43,7 @@ class Brain:
         self.last_rehydrate = 0.0
         self.fenced = threading.Event()
         self.report: dict = {"restored": None, "snapshots": 0, "uploaded": 0, "ingested": 0, "fallback_local": 0,
-                       "rehydrated": 0, "originals_rehydrated": 0, "journal_applied": 0}
+                       "rehydrated": 0, "journal_applied": 0}
 
     # ------------------------------------------------------------ ciclo de vida
     def acquire(self) -> bool:
@@ -65,26 +63,18 @@ class Brain:
     def prepare(self) -> None:
         self.s.ensure_dirs()
         self.drive.ensure_layout()
-
-        remote_db = (
-            self.engine.db.is_remote
-            if self.engine is not None
-            else Store.remote_requested()
-        )
-
-        if remote_db:
-            self.report["restored"] = "turso"
-            if self.engine is None:
-                self.engine = Engine(self.s, db=Store(self.s))
+        if self.s.use_turso:
+            # Turso é a fonte canônica: NUNCA restaurar snapshot antigo por cima de dados novos. Snapshots do Drive = só backup.
+            m = None
+            self.report["state_backend"] = "turso"
         else:
-            m = self.snaps.restore_latest(self.s.db_path)
-            self.report["restored"] = m["file"] if m else None
-            if self.engine is None:
-                self.engine = Engine(self.s)
+            m = self.snaps.restore_latest(self.s.db_path)         # CorruptState => aborta: nunca inicia "vazio" por cima
+        self.report["restored"] = m["file"] if m else None
+        if self.engine is None:
+            self.engine = Engine(self.s)
         self._install_publish_guard()
         self._install_journal()
         self.engine.pl.clip_fetcher = self.rehydrate_clip
-        self.engine.pl.original_fetcher = self.rehydrate_original
         rep = self.journal.reconcile(self.engine.db, lambda cid: scheduler.refresh_clip_status(self.engine.db, cid))
         self.report["journal_applied"] = len(rep["adopted"]) + len(rep["published"])
         self.rehydrate_pending()
@@ -98,11 +88,9 @@ class Brain:
         c.execute("UPDATE publications SET state=json_remove(state,'$.upload_url') WHERE state LIKE '%upload_url%'")
 
     def snapshot(self) -> dict | None:
-        if self.engine.db.is_remote:
-            return None
         if not self.still_owner():
             return None
-        meta = self.snaps.create(self.engine.db.conn, self.fence, still_owner=self.still_owner, sanitize=self._sanitize)
+        meta = self.snaps.create(self.engine.db.backup_source(), self.fence, still_owner=self.still_owner, sanitize=self._sanitize)
         self.report["snapshots"] += 1
         try:
             self.snaps.prune(keep=12)
@@ -150,10 +138,26 @@ class Brain:
         if self.clock() < self.drive_full_until:
             return 0
         try:
-            for c in db.q("SELECT id,fingerprint,local_path FROM contents WHERE local_path IS NOT NULL AND fingerprint IS NOT NULL AND drive_path IS NULL"):
+            for c in db.q("SELECT id,fingerprint,local_path,duration FROM contents WHERE local_path IS NOT NULL AND fingerprint IS NOT NULL AND drive_path IS NULL"):
                 p = Path(c["local_path"])
                 if not p.is_file() or not self.still_owner():
                     continue
+                try:
+                    actual = quick_fingerprint(p, c["duration"])
+                except OSError as e:
+                    db.event(
+                        "warn", "drive",
+                        f"leitura do original {c['id']} falhou; upload adiado: {e}"
+                    )
+                    continue
+
+                if actual != c["fingerprint"]:
+                    db.event(
+                        "error", "integrity",
+                        f"original {c['id']} diverge do fingerprint registrado; upload bloqueado"
+                    )
+                    continue
+
                 dp = f"originals/{c['fingerprint'][:32]}{p.suffix}"
                 try:
                     self.drive.upload(p, dp)
@@ -180,114 +184,96 @@ class Brain:
         self.report["uploaded"] += n
         return n
 
-    # ------------------------------------------------------------ reidratação de originais
+    # ------------------------------------------------------------ reidratação de clipes
     def rehydrate_original(self, content: dict) -> str:
-        """Restaura o original do Drive e valida identidade antes de atualizar o banco."""
+        """Restaura o original do Drive após validar seu fingerprint.
+        Retorna: present | restored | retry | missing | corrupt.
+        Nunca altera nem remove a cópia remota.
+        """
         db, st = self.engine.db, self.engine.st
         cid = content["id"]
+        fingerprint = content.get("fingerprint")
+        drive_path = content.get("drive_path")
+        duration = content.get("duration")
 
-        local = Path(content.get("local_path") or "")
-        if content.get("local_path") and local.is_file():
-            return "present"
+        if not fingerprint or not drive_path:
+            db.event("error", "rehydrate",
+                     f"original {cid} sem fingerprint ou cópia registrada no Drive")
+            return "missing"
 
-        dp = content.get("drive_path")
-        if not dp:
-            db.event(
-                "warn", "rehydrate",
-                f"original {cid} sem cópia no Drive; será necessária nova aquisição",
-                content=cid,
-            )
-            return "no_drive_copy"
-
-        suffix = Path(content.get("local_path") or "original.mp4").suffix
-        ext = suffix.lstrip(".") or "mp4"
-        dest = st.download_path(cid, ext)
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        current = Path(content.get("local_path") or "")
+        if content.get("local_path") and current.is_file():
+            try:
+                if quick_fingerprint(current, duration) == fingerprint:
+                    return "present"
+            except OSError:
+                pass
 
         try:
-            remote = self.drive.stat(dp)
-            if not remote:
-                db.event(
-                    "error", "rehydrate",
-                    f"original {cid}: arquivo não encontrado no Drive ({dp})",
-                    content=cid,
-                )
-                return "missing"
-
-            size = int(remote.get("size") or 0)
-            if not st.has_space(size):
-                db.event(
-                    "warn", "rehydrate",
-                    f"original {cid}: espaço local insuficiente para restauração",
-                    content=cid,
-                )
-                return "retry"
-
-            # O backend valida o MD5 do arquivo baixado.
-            self.drive.download(dp, dest)
-
-            try:
-                meta = probe(dest)
-                if float(meta.get("duration") or 0) < 5:
-                    raise IntegrityError("duração inferior a 5 segundos")
-
-                expected = content.get("fingerprint")
-                actual = quick_fingerprint(dest, content.get("duration"))
-                if not expected or actual != expected:
-                    raise IntegrityError("fingerprint difere do registro no Turso")
-            except IntegrityError:
-                raise
-            except Exception as e:
-                raise IntegrityError(
-                    f"arquivo baixado não é um vídeo válido: {e}"
-                ) from e
-
-        except IntegrityError as e:
-            dest.unlink(missing_ok=True)
-            db.event(
-                "error", "rehydrate",
-                f"original {cid}: integridade não confirmada ({e})",
-                content=cid,
-            )
-            return "corrupt"
+            info = self.drive.stat(drive_path)
         except TransientError as e:
-            dest.unlink(missing_ok=True)
-            db.event(
-                "warn", "rehydrate",
-                f"original {cid}: falha temporária ({e}); tentará novamente",
-                content=cid,
-            )
+            db.event("warn", "rehydrate",
+                     f"consulta do original {cid} falhou: {e}")
             return "retry"
         except PermanentError as e:
-            dest.unlink(missing_ok=True)
-            db.event(
-                "error", "rehydrate",
-                f"original {cid}: falha permanente no Drive ({e})",
-                content=cid,
-            )
+            db.event("error", "rehydrate",
+                     f"original {cid} indisponível no Drive: {e}")
             return "missing"
-        except Exception as e:
-            dest.unlink(missing_ok=True)
-            db.event(
-                "error", "rehydrate",
-                f"original {cid}: arquivo restaurado inválido ({e})",
-                content=cid,
+
+        if not info:
+            db.event("error", "rehydrate",
+                     f"original {cid} ausente no Drive: {drive_path}")
+            return "missing"
+
+        size = int(info.get("size") or 0)
+        if not st.has_space(size):
+            db.event("warn", "rehydrate",
+                     f"sem espaço local para restaurar original {cid}")
+            return "retry"
+
+        ext = Path(drive_path).suffix.lstrip(".") or "mp4"
+        dest = st.download_path(cid, ext)
+        temp = dest.with_name(dest.name + ".rehydrate")
+        part = temp.with_suffix(temp.suffix + ".part")
+
+        try:
+            self.drive.download(drive_path, temp)
+
+            if quick_fingerprint(temp, duration) != fingerprint:
+                db.event("error", "rehydrate",
+                         f"fingerprint divergente no original {cid}; download descartado")
+                return "corrupt"
+
+            temp.replace(dest)
+            db.x(
+                "UPDATE contents SET local_path=? WHERE id=?",
+                (str(dest), cid),
             )
+            self.report["originals_rehydrated"] = (
+                self.report.get("originals_rehydrated", 0) + 1
+            )
+            return "restored"
+
+        except IntegrityError as e:
+            db.event("error", "rehydrate",
+                     f"original {cid} corrompido no Drive: {e}")
             return "corrupt"
+        except TransientError as e:
+            db.event("warn", "rehydrate",
+                     f"restauração do original {cid} será repetida: {e}")
+            return "retry"
+        except PermanentError as e:
+            db.event("error", "rehydrate",
+                     f"original {cid} indisponível: {e}")
+            return "missing"
+        except OSError as e:
+            db.event("warn", "rehydrate",
+                     f"falha local ao restaurar original {cid}: {e}")
+            return "retry"
+        finally:
+            temp.unlink(missing_ok=True)
+            part.unlink(missing_ok=True)
 
-        db.x(
-            "UPDATE contents SET local_path=?, error=NULL WHERE id=?",
-            (str(dest), cid),
-        )
-        self.report["originals_rehydrated"] += 1
-        db.event(
-            "info", "rehydrate",
-            f"original {cid} restaurado e validado a partir do Drive",
-            content=cid,
-        )
-        return "restored"
-
-    # ------------------------------------------------------------ reidratação de clipes
     def rehydrate_clip(self, clip: dict) -> str:
         """Garante o arquivo local do clipe a partir do Drive. Mantém id/registros; confere sha256; não reenvia nada.
         Retorna: present | restored | retry | no_drive_copy | missing | corrupt."""
@@ -350,58 +336,184 @@ class Brain:
         pl = self.engine.pl
         local = pl.h_process
 
-        def h_process(job: dict):
-            cid = job["payload"]["content_id"]
-            c = pl.db.one("SELECT * FROM contents WHERE id=?", (cid,))
-            if not c or not c["fingerprint"]:
-                return local(job)
+        def fallback_local(job: dict, cid: int, c: dict, reason: str):
+            current = pl.db.one(
+                "SELECT * FROM contents WHERE id=?", (cid,)
+            )
+            if current:
+                c = dict(current)
 
-            if not c.get("local_path") or not Path(c["local_path"]).is_file():
-                result = pl.original_fetcher(c) if pl.original_fetcher else "no_drive_copy"
+            local_path = c.get("local_path")
+            local_exists = bool(
+                local_path and Path(local_path).is_file()
+            )
+
+            if c.get("drive_path"):
+                # Validar também arquivos locais existentes, pois podem
+                # estar incompletos ou corrompidos.
+                result = self.rehydrate_original(c)
+
                 if result == "retry":
                     raise NotReadyYet(
-                        "original sendo restaurado do Drive antes do processamento remoto",
+                        f"restauração do original {cid} pendente; "
+                        "fallback local adiado",
                         retry_after=300,
                     )
-                if result in ("present", "restored"):
-                    c = pl.db.one("SELECT * FROM contents WHERE id=?", (cid,))
-                else:
+
+                if result in ("missing", "corrupt"):
+                    raise PermanentError(
+                        f"original {cid} irrecuperável no Drive: {result}"
+                    )
+
+                if result not in ("restored", "present"):
+                    raise PermanentError(
+                        f"estado inesperado na restauração do original "
+                        f"{cid}: {result}"
+                    )
+
+                current = pl.db.one(
+                    "SELECT * FROM contents WHERE id=?", (cid,)
+                )
+                if not current:
+                    raise PermanentError(
+                        f"conteúdo {cid} desapareceu após restaurar o original"
+                    )
+                c = dict(current)
+
+            elif not local_exists:
+                raise PermanentError(
+                    f"original {cid} indisponível: sem cópia local ou no Drive"
+                )
+
+            self.report["fallback_local"] += 1
+            pl.db.event(
+                "warn", "remote",
+                f"processamento remoto de {cid} indisponível "
+                f"({reason}); usando o próprio executor"
+            )
+            return local(job)
+
+        def h_process(job: dict):
+            cid = job["payload"]["content_id"]
+            row = pl.db.one(
+                "SELECT * FROM contents WHERE id=?", (cid,)
+            )
+            if not row:
+                return local(job)
+
+            c = dict(row)
+            fingerprint = c.get("fingerprint")
+            if not fingerprint:
+                return local(job)
+
+            key = fingerprint[:32]
+            local_path = c.get("local_path")
+            local_exists = bool(
+                local_path and Path(local_path).is_file()
+            )
+            dp = c.get("drive_path")
+
+            # O executor remoto pode baixar diretamente do Drive.
+            if not dp:
+                if not local_exists:
                     return local(job)
 
-            if not c or not c.get("local_path") or not Path(c["local_path"]).is_file():
-                return local(job)
+                try:
+                    actual = quick_fingerprint(
+                        Path(local_path), c.get("duration")
+                    )
+                except OSError as e:
+                    raise TransientError(
+                        f"não foi possível validar o original {cid}; "
+                        f"upload adiado: {e}"
+                    ) from e
 
-            key = c["fingerprint"][:32]
-            dp = c.get("drive_path") or f"originals/{key}{Path(c['local_path']).suffix}"
-            try:
-                if not c.get("drive_path"):
-                    self.drive.upload(Path(c["local_path"]), dp)
-                    pl.db.x("UPDATE contents SET drive_path=? WHERE id=?", (dp, cid))
-            except (TransientError, PermanentError) as e:
-                pl.db.event("warn", "remote", f"original {cid} não está no Drive ({e}); processando localmente")
-                return local(job)
+                if actual != fingerprint:
+                    pl.db.event(
+                        "error", "integrity",
+                        f"original {cid} diverge do fingerprint registrado; "
+                        "processamento remoto bloqueado"
+                    )
+                    raise PermanentError(
+                        f"original {cid} corrompido ou alterado localmente; "
+                        "fingerprint divergente"
+                    )
+
+                dp = f"originals/{key}{Path(local_path).suffix}"
+                try:
+                    self.drive.upload(Path(local_path), dp)
+                    pl.db.x(
+                        "UPDATE contents SET drive_path=? WHERE id=?",
+                        (dp, cid),
+                    )
+                except (TransientError, PermanentError) as e:
+                    pl.db.event(
+                        "warn", "remote",
+                        f"original {cid} não está no Drive ({e}); "
+                        "processando localmente"
+                    )
+                    return local(job)
+
             tkey = f"process:{key}"
             t = self.client.get_by_key(tkey)
+
             if t is None:
                 cfg = pl.db.all_settings()
-                used = [(r["start"], r["end"]) for r in pl.db.q("SELECT start,end FROM segments_used WHERE content_id=? OR fingerprint=?", (cid, c["fingerprint"]))]
+                used = [
+                    (r["start"], r["end"])
+                    for r in pl.db.q(
+                        "SELECT start,end FROM segments_used "
+                        "WHERE content_id=? OR fingerprint=?",
+                        (cid, fingerprint),
+                    )
+                ]
                 from .. import learning
                 weights, _ = learning.learned_weights(pl.db)
-                self.client.submit("process_content", {
-                    "content_key": key, "drive_path": dp, "sha256": None, "cfg": cfg, "used": used, "weights": weights,
-                    "max_clips": job["payload"].get("max_clips"), "whisper": pl.s.whisper_enabled, "whisper_model": pl.s.whisper_model},
-                    key=tkey, priority=6, prefer=["kaggle-gpu", "colab"], est_seconds=max(300.0, (c["duration"] or 600) * 0.6))
+
+                self.client.submit(
+                    "process_content",
+                    {
+                        "content_key": key,
+                        "drive_path": dp,
+                        "sha256": None,
+                        "cfg": cfg,
+                        "used": used,
+                        "weights": weights,
+                        "max_clips": job["payload"].get("max_clips"),
+                        "whisper": pl.s.whisper_enabled,
+                        "whisper_model": pl.s.whisper_model,
+                    },
+                    key=tkey,
+                    priority=6,
+                    prefer=["kaggle-gpu", "colab"],
+                    est_seconds=max(
+                        300.0, (c["duration"] or 600) * 0.6
+                    ),
+                )
                 t = self.client.get_by_key(tkey)
+
             st = t["status"]
+
             if st == "done":
                 return self._ingest(c, json.loads(t["result"]))
-            if st in ("dead", "cancelled") or (st == "queued" and self.clock() - t["created"] > self.remote_wait_s):
+
+            if st in ("dead", "cancelled") or (
+                st == "queued"
+                and self.clock() - t["created"] > self.remote_wait_s
+            ):
                 if st == "queued" and not self.client.cancel_if_queued(tkey):
-                    raise NotReadyYet("tarefa remota acabou de ser assumida por outro executor", retry_after=60)
-                self.report["fallback_local"] += 1
-                pl.db.event("warn", "remote", f"processamento remoto de {cid} indisponível ({st}); usando o próprio executor")
-                return local(job)
-            raise NotReadyYet(f"processamento remoto em andamento ({st})", retry_after=120)
+                    raise NotReadyYet(
+                        "tarefa remota acabou de ser assumida "
+                        "por outro executor",
+                        retry_after=60,
+                    )
+
+                return fallback_local(job, cid, c, st)
+
+            raise NotReadyYet(
+                f"processamento remoto em andamento ({st})",
+                retry_after=120,
+            )
 
         pl.h_process = h_process
 
@@ -463,20 +575,15 @@ class Brain:
                     self.check_storage()
                 if self.clock() - self.last_rehydrate >= 300:
                     self.rehydrate_pending()
-                if (
-                    not self.engine.db.is_remote
-                    and self.clock() - last_snap >= self.snapshot_every_s
-                ):
-                    self.snapshot()
-                    last_snap = self.clock()
+                if self.clock() - last_snap >= self.snapshot_every_s:
+                    self.snapshot(); last_snap = self.clock()
                 sleep(tick_s)
         finally:
             self.engine.stop()                                      # para workers ANTES do snapshot final
             if status != "fenced" and self.still_owner():
                 self.sync_files()
                 self.journal.flush()
-                if not self.engine.db.is_remote:
-                    self.snapshot()
+                self.snapshot()
                 self.client.lock_release(LOCK, self.owner, self.fence)
             elif status == "fenced":
                 self.engine.db.event("error", "brain", "lock perdido: sem snapshot final nem novas publicações")

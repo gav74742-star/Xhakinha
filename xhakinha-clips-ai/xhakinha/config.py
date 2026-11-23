@@ -66,11 +66,21 @@ class Settings:
     tiktok_api: str = "https://open.tiktokapis.com"
     tiktok_auth_url: str = "https://www.tiktok.com/v2/auth/authorize/"
     graph_base: str = "https://graph.facebook.com/v21.0"
+    # banco canônico compartilhado (Turso/libSQL). Vazio => SQLite local (comportamento anterior, também é o plano de rollback)
+    turso_url: str = ""
+    turso_token: str = ""
+    state_backend: str = "auto"         # auto | sqlite | turso
     # retentativas
     retry_base_s: float = 20.0
     retry_cap_s: float = 3600.0
     retry_max_attempts: int = 6
     extra: dict = field(default_factory=dict)
+
+    @property
+    def use_turso(self) -> bool:
+        if self.state_backend == "sqlite":
+            return False
+        return bool(self.turso_url and self.turso_token)
 
     @property
     def tz(self) -> ZoneInfo:
@@ -102,6 +112,12 @@ class Settings:
             )
         if self.env == "production" and self.public_base_url and not self.public_base_url.startswith("https://"):
             raise ConfigError("PUBLIC_BASE_URL precisa começar com https:// em produção.")
+        if self.state_backend not in ("auto", "sqlite", "turso"):
+            raise ConfigError("XH_STATE_BACKEND deve ser auto, sqlite ou turso")
+        if self.state_backend == "turso" and not (self.turso_url and self.turso_token):
+            raise ConfigError("XH_STATE_BACKEND=turso exige TURSO_DATABASE_URL e TURSO_AUTH_TOKEN")
+        if self.turso_url and not self.turso_url.startswith(("libsql://", "https://", "wss://", "http://127.0.0.1", "http://localhost")):
+            raise ConfigError("TURSO_DATABASE_URL deve começar com libsql:// (copie 'Database URL' do painel do Turso)")
         try:
             ZoneInfo(self.timezone)
         except Exception:
@@ -138,6 +154,9 @@ def load_settings(validate: bool = True) -> Settings:
         whisper_model=_env("WHISPER_MODEL", "small"),
         whisper_enabled=_env("WHISPER_ENABLED", "1") != "0",
         graph_base=(_env("GRAPH_BASE") or "https://graph.facebook.com/v21.0").rstrip("/"),
+        turso_url=_env("TURSO_DATABASE_URL"),
+        turso_token=_env("TURSO_AUTH_TOKEN"),
+        state_backend=(_env("XH_STATE_BACKEND") or "auto").lower(),
         retry_base_s=_float("RETRY_BASE_S", 20.0),
         retry_cap_s=_float("RETRY_CAP_S", 3600.0),
         retry_max_attempts=_int("RETRY_MAX_ATTEMPTS", 6),

@@ -29,8 +29,15 @@ def synth_video(tmp_path_factory):
 @pytest.fixture()
 def settings(tmp_path, monkeypatch):
     from xhakinha.config import Settings
+    extra = {}
+    if os.environ.get("XH_TEST_BACKEND") == "turso":      # roda a suíte inteira sobre o FAKE libsql (SIMULADO)
+        import fake_libsql
+        url = f"libsql://fake-{tmp_path.name}.turso.io"
+        fake_libsql.install(url, tmp_path / "fake-turso.db")
+        monkeypatch.setenv("XH_TURSO_INIT", "1")
+        extra = dict(turso_url=url, turso_token="tok", state_backend="turso")
     s = Settings(secret_key=SECRET, data_dir=tmp_path / "data", env="test", cookie_secure=False,
-                 retry_base_s=1, retry_cap_s=5, max_workers=2, min_free_gb=0.01)
+                 retry_base_s=1, retry_cap_s=5, max_workers=2, min_free_gb=0.01, **extra)
     s.validate()
     s.ensure_dirs()
     return s
