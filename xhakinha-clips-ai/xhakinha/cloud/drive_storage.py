@@ -14,7 +14,7 @@ import os
 import shutil
 import threading
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import requests
 
@@ -124,6 +124,23 @@ class DriveBackend:
             return self.upload(tmp, path)
         finally:
             tmp.unlink(missing_ok=True)
+
+    def delete_published_clip(self, path: str) -> None:
+        """Move para a lixeira somente o MP4 final em clips/pending e seu sidecar JSON.
+
+        A chamada só é feita pelo Brain depois de conferir o histórico de todas as
+        plataformas. O método ainda bloqueia traversal e qualquer outro diretório.
+        """
+        raw = str(path)
+        p = PurePosixPath(raw)
+        if ("\\" in raw or p.is_absolute() or ".." in p.parts or len(p.parts) != 3
+                or p.parts[:2] != ("clips", "pending") or p.suffix.lower() != ".mp4"):
+            raise PermissionError(f"recusado apagar cópia que não seja MP4 em clips/pending: {raw}")
+        video = p.as_posix()
+        self._delete(video)
+        sidecar = p.with_suffix(".json").as_posix()
+        if self.stat(sidecar):
+            self._delete(sidecar)
 
     def delete(self, path: str) -> None:
         if not path.startswith(DELETABLE):

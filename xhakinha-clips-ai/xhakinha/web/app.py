@@ -302,8 +302,10 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
 
     async def clips(request: Request):
         st = request.query_params.get("status")
-        rows = db.q("SELECT id,content_id,start,end,score,scores,category,status,duration,origin,created,description,error,(path IS NOT NULL) has_file FROM clips"
-                    + (" WHERE status=?" if st else "") + " ORDER BY id DESC LIMIT 200", (st,) if st else ())
+        limit = min(1000, max(1, int(request.query_params.get("limit", "200"))))
+        sql = "SELECT id,content_id,start,end,score,scores,category,status,duration,origin,created,description,error,sha256,size,(path IS NOT NULL) has_file FROM clips"
+        args = (st, limit) if st else (limit,)
+        rows = db.q(sql + (" WHERE status=?" if st else "") + " ORDER BY id DESC LIMIT ?", args)
         for r in rows:
             r["scores"] = json.loads(r["scores"] or "{}")
         return J(rows)

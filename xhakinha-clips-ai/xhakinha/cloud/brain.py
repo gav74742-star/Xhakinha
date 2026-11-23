@@ -41,9 +41,10 @@ class Brain:
         self.drive_full_until = 0.0
         self.last_storage_check = 0.0
         self.last_rehydrate = 0.0
+        self.last_remote_clip_cleanup = 0.0
         self.fenced = threading.Event()
         self.report: dict = {"restored": None, "snapshots": 0, "uploaded": 0, "ingested": 0, "fallback_local": 0,
-                       "rehydrated": 0, "journal_applied": 0}
+                       "rehydrated": 0, "journal_applied": 0, "remote_clips_deleted": 0}
 
     # ------------------------------------------------------------ ciclo de vida
     def acquire(self) -> bool:
@@ -129,6 +130,44 @@ class Brain:
         elif paused and why.startswith("drive:") and free >= hi:
             self.set_ingest_paused(False)
         return {"free_gb": free}
+
+    # ------------------------------------------------------------ limpeza remota segura de clipes publicados
+    def cleanup_published_remote(self) -> int:
+        """Remove do Drive somente MP4 cujo arquivo local já foi limpo e cujas publicações terminaram.
+
+        Exige pelo menos uma publicação confirmada; todas as demais devem estar
+        published/cancelled. Falha de API mantém drive_path para nova tentativa.
+        """
+        db, now = self.engine.db, float(self.clock())
+        retention_h = max(0.0, float(db.get("published_clip_retention_h", 0) or 0))
+        removed = 0
+        rows = db.q("SELECT id,drive_path FROM clips WHERE drive_path IS NOT NULL AND path IS NULL")
+        for clip in rows:
+            clip_id, drive_path = int(clip["id"]), str(clip.get("drive_path") or "")
+            pubs = db.q("SELECT status,published_at FROM publications WHERE clip_id=?", (clip_id,))
+            if not pubs:
+                continue
+            states = [str(pub.get("status") or "") for pub in pubs]
+            if any(state not in ("published", "cancelled") for state in states):
+                continue
+            published = [pub for pub in pubs if pub.get("status") == "published" and pub.get("published_at")]
+            if not published:
+                continue
+            last_published = max(float(pub["published_at"]) for pub in published)
+            if now - last_published < retention_h * 3600:
+                continue
+            try:
+                self.drive.delete_published_clip(drive_path)
+                db.x("UPDATE clips SET drive_path=NULL,updated=? WHERE id=? AND drive_path=?",
+                     (now, clip_id, drive_path))
+                db.event("info", "cleanup", f"cópia remota do clipe {clip_id} removida após publicação confirmada",
+                         clip=clip_id)
+                removed += 1
+            except Exception as exc:
+                db.event("warn", "cleanup", f"cópia remota do clipe {clip_id} preservada; limpeza será tentada novamente: {exc}",
+                         clip=clip_id)
+        self.report["remote_clips_deleted"] = self.report.get("remote_clips_deleted", 0) + removed
+        return removed
 
     # ------------------------------------------------------------ sincronização de arquivos com o Drive
     def sync_files(self) -> int:
@@ -575,12 +614,16 @@ class Brain:
                     self.check_storage()
                 if self.clock() - self.last_rehydrate >= 300:
                     self.rehydrate_pending()
+                if self.clock() - self.last_remote_clip_cleanup >= 300:
+                    self.cleanup_published_remote()
+                    self.last_remote_clip_cleanup = self.clock()
                 if self.clock() - last_snap >= self.snapshot_every_s:
                     self.snapshot(); last_snap = self.clock()
                 sleep(tick_s)
         finally:
             self.engine.stop()                                      # para workers ANTES do snapshot final
             if status != "fenced" and self.still_owner():
+                self.cleanup_published_remote()
                 self.sync_files()
                 self.journal.flush()
                 self.snapshot()
