@@ -6,7 +6,7 @@ Pillow
 PyJWT
 cryptography
 psutil
-libsql
+libsql==0.1.11
 python-multipart
 yt-dlp
 faster-whisper

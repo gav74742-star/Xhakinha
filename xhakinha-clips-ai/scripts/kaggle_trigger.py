@@ -3,7 +3,9 @@ Regras: não inicia se há cérebro ativo, se o Kaggle está com breaker aberto/
 from __future__ import annotations
 
 import os
+import json
 import subprocess
+from pathlib import Path
 import sys
 
 import requests
@@ -25,6 +27,27 @@ def decide(state: dict) -> tuple[bool, str]:
     return True, "sem cérebro e há capacidade"
 
 
+
+def validate_kaggle_payload() -> None:
+    root = Path("kaggle")
+    metadata = json.loads((root / "kernel-metadata.json").read_text())
+    notebook = json.loads((root / "kaggle_worker.ipynb").read_text())
+
+    if metadata.get("id") != "GAv7489/xhakinha-worker":
+        raise SystemExit("BLOQUEADO: identificador Kaggle incorreto.")
+
+    if metadata.get("code_file") != "kaggle_worker.ipynb":
+        raise SystemExit("BLOQUEADO: arquivo principal incorreto.")
+
+    count = len(notebook.get("cells", []))
+    if count != 32:
+        raise SystemExit(
+            f"BLOQUEADO: notebook tem {count} células; são exigidas 32. "
+            "Nenhum push foi realizado."
+        )
+
+    print("Notebook autorizado validado: 32 células.")
+
 def main() -> int:
     r = requests.get(os.environ["XH_COORD_URL"].rstrip("/") + "/api/state", timeout=30,
                      headers={"Authorization": "Bearer " + os.environ["XH_ADMIN_TOKEN"], "X-Requested-With": "XHK"})
@@ -33,6 +56,7 @@ def main() -> int:
     print("decisão:", ok, "-", why)
     if not ok:
         return 0
+    validate_kaggle_payload()
     return subprocess.call(["kaggle", "kernels", "push", "-p", "kaggle"])
 
 
