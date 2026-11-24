@@ -1,5 +1,5 @@
 """Runner/Kaggle: compatibilidade do notebook, decisão do gatilho, sessão completa contra coordenador HTTP local.
-REAL: processo Python, HTTP localhost, SQLite. SIMULADO: Drive (pasta local). NÃO TESTADO: execução dentro do Kaggle de verdade."""
+REAL: processo Python, HTTP localhost, SQLite. SIMULADO: armazenamento local para testes. NÃO TESTADO: execução dentro do Kaggle de verdade."""
 import json
 import socket
 import sys
@@ -92,7 +92,8 @@ def test_sessao_completa_cerebro_cria_snapshot_e_libera_lock(tmp_path, monkeypat
         try: requests.get(f"http://127.0.0.1:{port}/api/health", timeout=1); break
         except Exception: time.sleep(0.05)
     env = {"SECRET_KEY": "k" * 48, "DATA_DIR": str(tmp_path / "data"), "XH_ENV": "test", "COOKIE_SECURE": "0",
-           "XH_PROVIDER": "local", "XH_SESSION_HOURS": "0.1", "XH_DRIVE_DIR": str(tmp_path / "drive"),
+           "XH_PROVIDER": "local", "XH_SESSION_HOURS": "0.1",
+           "XH_STORAGE_BACKEND": "local", "XH_LOCAL_RUNTIME_DIR": str(tmp_path / "drive"),
            "XH_COORD_URL": f"http://127.0.0.1:{port}", "XH_COORD_TOKEN": "E" * 24, "MIN_FREE_GB": "0.01"}
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -107,32 +108,11 @@ def test_sessao_completa_cerebro_cria_snapshot_e_libera_lock(tmp_path, monkeypat
     srv.should_exit = True
 
 
-def test_drive_sem_credenciais_falha_com_mensagem_clara():
-    with pytest.raises(SystemExit, match="credenciais do Drive"):
+def test_storage_sem_configuracao_falha_com_mensagem_clara():
+    with pytest.raises(SystemExit, match="Armazenamento não configurado"):
         runner.drive_from_env({})
 
 
-def test_autorizacao_drive_por_codigo_de_dispositivo(tmp_path):
-    """SIM: servidor local imita o OAuth do Google (device flow). O Google real depende de você autorizar no celular."""
-    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-    from urllib.parse import parse_qs
-    seen = {"n": 0}
-
-    class H(BaseHTTPRequestHandler):
-        def log_message(self, *a): pass
-        def do_POST(self):
-            body = parse_qs(self.rfile.read(int(self.headers["Content-Length"])).decode())
-            if self.path == "/device/code":
-                assert body["scope"] == ["https://www.googleapis.com/auth/drive.file"]
-                out = {"device_code": "DC", "user_code": "ABCD-EFGH", "verification_url": "https://www.google.com/device", "expires_in": 60, "interval": 0}
-            else:
-                seen["n"] += 1
-                out = {"error": "authorization_pending"} if seen["n"] < 3 else {"refresh_token": "RT-OK", "access_token": "a"}
-            b = json.dumps(out).encode()
-            self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
-    srv = ThreadingHTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
-    import drive_authorize
-    lines = []
-    tok = drive_authorize.authorize("cid", "cs", f"http://127.0.0.1:{srv.server_address[1]}", sleep=lambda s: None, out=lines.append)
-    srv.shutdown()
-    assert tok == "RT-OK" and "ABCD-EFGH" in lines[0]
+def test_google_drive_desativado():
+    with pytest.raises(SystemExit, match="Google Drive foi desativado"):
+        runner.drive_from_env({"XH_STORAGE_BACKEND": "gdrive"})
