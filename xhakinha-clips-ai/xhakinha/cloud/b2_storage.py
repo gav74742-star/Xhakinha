@@ -128,18 +128,43 @@ class B2Backend(DriveBackend):
             "mtime": lm.timestamp() if hasattr(lm, "timestamp") else 0,
         }
 
+    multipart_threshold = 64 * 1024 * 1024
+    multipart_chunksize = 64 * 1024 * 1024
+    multipart_max_concurrency = 2
+
     def _put(self, local: Path, path: str, md5: str) -> dict:
         key = self._key(path)
         local = Path(local)
         size = local.stat().st_size
         sha256 = sha256_file(local)
+        metadata = {"md5": md5, "sha256": sha256}
+
         try:
-            with local.open("rb") as body:
-                self.client.put_object(
-                    Bucket=self.bucket, Key=key, Body=body,
-                    ContentLength=size,
-                    Metadata={"md5": md5, "sha256": sha256},
+            if size >= self.multipart_threshold:
+                from boto3.s3.transfer import TransferConfig
+
+                transfer_config = TransferConfig(
+                    multipart_threshold=self.multipart_threshold,
+                    multipart_chunksize=self.multipart_chunksize,
+                    max_concurrency=self.multipart_max_concurrency,
+                    use_threads=True,
                 )
+                self.client.upload_file(
+                    str(local),
+                    self.bucket,
+                    key,
+                    ExtraArgs={"Metadata": metadata},
+                    Config=transfer_config,
+                )
+            else:
+                with local.open("rb") as body:
+                    self.client.put_object(
+                        Bucket=self.bucket,
+                        Key=key,
+                        Body=body,
+                        ContentLength=size,
+                        Metadata=metadata,
+                    )
         except Exception as exc:
             self._raise(exc, "PUT")
 

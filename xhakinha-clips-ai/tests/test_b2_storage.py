@@ -12,9 +12,19 @@ class Body:
 
 
 class FakeB2:
-    def __init__(self): self.objects = {}
+    def __init__(self):
+        self.objects = {}
+        self.multipart_uploads = []
+
     def put_object(self, Bucket, Key, Body, ContentLength, Metadata):
         self.objects[Key] = {"body": Body.read(), "meta": Metadata}
+
+    def upload_file(self, Filename, Bucket, Key, ExtraArgs=None, Config=None):
+        with open(Filename, "rb") as source:
+            data = source.read()
+        metadata = (ExtraArgs or {}).get("Metadata", {})
+        self.objects[Key] = {"body": data, "meta": metadata}
+        self.multipart_uploads.append(Key)
     def head_object(self, Bucket, Key):
         if Key not in self.objects:
             error = RuntimeError("objeto não encontrado")
@@ -67,6 +77,48 @@ def test_b2_backend_upload_download_quota_and_safe_delete(tmp_path):
     ):
         with pytest.raises(PermissionError):
             backend.delete_published_clip(invalid)
+
+
+def test_b2_backend_uses_multipart_for_large_files(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    class FakeTransferConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    boto3_module = types.ModuleType("boto3")
+    s3_module = types.ModuleType("boto3.s3")
+    transfer_module = types.ModuleType("boto3.s3.transfer")
+    transfer_module.TransferConfig = FakeTransferConfig
+
+    monkeypatch.setitem(sys.modules, "boto3", boto3_module)
+    monkeypatch.setitem(sys.modules, "boto3.s3", s3_module)
+    monkeypatch.setitem(sys.modules, "boto3.s3.transfer", transfer_module)
+
+    fake = FakeB2()
+    backend = B2Backend(
+        "https://s3.us-east-005.backblazeb2.com",
+        "us-east-005",
+        "key",
+        "secret",
+        "bucket",
+        client=fake,
+    )
+
+    # Reduz o limite somente neste teste para não criar um arquivo enorme.
+    monkeypatch.setattr(B2Backend, "multipart_threshold", 8)
+
+    source = tmp_path / "large-video.mp4"
+    source.write_bytes(b"xhakinha-multipart-test-data")
+
+    uploaded = backend.upload(source, "originals/large-video.mp4")
+
+    assert fake.multipart_uploads == ["originals/large-video.mp4"]
+    assert uploaded["size"] == source.stat().st_size
+    assert backend.stat("originals/large-video.mp4")["sha256"] == (
+        __import__("hashlib").sha256(source.read_bytes()).hexdigest()
+    )
 
 
 def test_b2_backend_only_deletes_processed_original_prefix(tmp_path):
