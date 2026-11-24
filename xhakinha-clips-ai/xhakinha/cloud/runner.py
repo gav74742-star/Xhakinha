@@ -16,10 +16,11 @@ from pathlib import Path
 from ..config import load_settings, redact
 from .brain import Brain
 from .client import HttpClient
-from .drive_storage import DriveBackend, GoogleDriveBackend, LocalDirBackend
+from .drive_storage import DriveBackend, LocalDirBackend
 from .executor import Executor
 from .handlers import default_handlers
 from .healthcheck import gpu_info, local_report
+from .b2_storage import B2Backend
 
 log = logging.getLogger("xh.runner")
 
@@ -37,14 +38,36 @@ def detect_provider(env=os.environ) -> str:
 
 
 def drive_from_env(env=os.environ) -> DriveBackend:
-    if env.get("GDRIVE_REFRESH_TOKEN"):
-        return GoogleDriveBackend(env["GDRIVE_CLIENT_ID"], env["GDRIVE_CLIENT_SECRET"], env["GDRIVE_REFRESH_TOKEN"],
-                                  api=env.get("GDRIVE_API", "https://www.googleapis.com"),
-                                  token_url=env.get("GDRIVE_TOKEN_URL", "https://oauth2.googleapis.com/token"))
-    if env.get("XH_DRIVE_DIR"):
-        log.warning("USANDO PASTA LOCAL COMO 'DRIVE' (apenas teste/offline) — nada vai para o Google Drive")
-        return LocalDirBackend(Path(env["XH_DRIVE_DIR"]))
-    raise SystemExit("Faltam credenciais do Drive (GDRIVE_CLIENT_ID/GDRIVE_CLIENT_SECRET/GDRIVE_REFRESH_TOKEN). Veja KAGGLE_SETUP.txt")
+    """Seleciona Backblaze B2 ou armazenamento local; Google Drive desativado."""
+    mode = str(env.get("XH_STORAGE_BACKEND", "")).strip().lower()
+
+    if mode == "b2":
+        region = env.get("B2_REGION", "").strip()
+        endpoint = env.get("B2_ENDPOINT_URL", "").strip()
+        if not endpoint and region:
+            endpoint = f"https://s3.{region}.backblazeb2.com"
+        return B2Backend(
+            endpoint,
+            region,
+            env.get("B2_KEY_ID", ""),
+            env.get("B2_APPLICATION_KEY", ""),
+            env.get("B2_BUCKET", ""),
+            max_gb=float(env.get("XH_B2_MAX_GB", "8")),
+        )
+
+    if mode == "local":
+        root = Path(env.get("XH_LOCAL_RUNTIME_DIR", "/tmp/xhakinha-runtime"))
+        return LocalDirBackend(root)
+
+    if mode == "gdrive":
+        raise SystemExit(
+            "Google Drive foi desativado neste projeto. Use XH_STORAGE_BACKEND=b2."
+        )
+
+    raise SystemExit(
+        "Armazenamento não configurado. Use XH_STORAGE_BACKEND=b2; "
+        "Google Drive está desativado."
+    )
 
 
 def main(env=os.environ) -> dict:
