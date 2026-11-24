@@ -1,10 +1,10 @@
-XHAKINHA CLIPS AI — CONFIGURAÇÃO KAGGLE + DRIVE + COORDENADOR (referência rápida)
+XHAKINHA CLIPS AI — CONFIGURAÇÃO KAGGLE + BACKBLAZE B2 + COORDENADOR (referência rápida)
 
 SECRETS do Kaggle (Notebook → Add-ons → Secrets). Nomes EXATOS:
   SECRET_KEY              chave forte (>=32 caracteres): python scripts/setup.py gera uma
   XH_COORD_URL            https://xhakinha-coord.SEUUSUARIO.workers.dev
   XH_COORD_TOKEN          o mesmo valor do segredo EXEC_TOKEN do Worker
-  GDRIVE_CLIENT_ID / GDRIVE_CLIENT_SECRET / GDRIVE_REFRESH_TOKEN
+  B2_REGION / B2_ENDPOINT_URL / B2_KEY_ID / B2_APPLICATION_KEY / B2_BUCKET
   TURSO_DATABASE_URL      libsql://SEU-BANCO.turso.io   (painel Turso > seu banco > Database URL)
   TURSO_AUTH_TOKEN        token de ESCRITA do mesmo banco (NÃO use o token "read-only"; o Kaggle precisa gravar)
   YOUTUBE_API_KEY (opcional), TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET (opcional)
@@ -14,15 +14,15 @@ Segredos do Worker (wrangler secret put): EXEC_TOKEN, ADMIN_TOKEN (valores longo
 
 BANCO (Turso): é a fonte ÚNICA de estado (fila, clipes, publicações, cota). Render e Kaggle usam as MESMAS duas variáveis
 (TURSO_DATABASE_URL e TURSO_AUTH_TOKEN). Com elas definidas o Xhakinha usa Turso; sem elas, volta ao SQLite local (rollback).
-Neste modo os snapshots do Drive são só BACKUP (nunca restaurados por cima do Turso). Veja docs/TURSO.md.
+Neste modo o Turso é a fonte única do estado; backups de estado não devem ser restaurados por cima do Turso. Veja docs/TURSO.md.
 
-ESTRUTURA NO DRIVE (criada automaticamente em "XHAKINHA_CLIPS_AI"):
+ESTRUTURA DE ARMAZENAMENTO NO B2 (criada automaticamente em "XHAKINHA_CLIPS_AI"):
   originals/  clips/pending/  clips/published/  clips/failed/  db/snapshots/  checkpoints/  logs/  exports/  tmp/
 
 REGRAS ANTI-PERDA IMPLEMENTADAS: upload resumível + conferência de MD5; download em .part + sha256; nunca sobrescreve;
-nunca apaga originais/clipes (o Drive recusa apagar fora de snapshots/checkpoints/tmp/logs); snapshot do SQLite com
+nunca apaga originais/clipes (o backend restringe exclusões a operações explicitamente autorizadas); snapshot do SQLite com
 manifesto gravado por último; restauração só de snapshot verificado (se houver snapshots e nenhum válido, NÃO inicia vazio);
-um único "cérebro" por vez (lock com fencing); publicação só com o lock em mãos; Drive cheio => pausa ingestão sem apagar nada.
+um único "cérebro" por vez (lock com fencing); publicação só com o lock em mãos; B2 no limite => pausa ingestão sem apagar nada.
 
 LIMITES CONHECIDOS (honestidade):
   * Cotas do Kaggle/Colab/Actions são ESTIMATIVAS conservadoras (não há API oficial de consulta); edite em providers.config.
@@ -30,3 +30,6 @@ LIMITES CONHECIDOS (honestidade):
   * TikTok sem auditoria => posts privados (SELF_ONLY). Isso é regra do TikTok, não do projeto.
   * Execução "garantida" no horário exato não existe em nuvem gratuita: se não houver cérebro ativo, as publicações ficam na
     fila e são reagendadas quando uma sessão voltar.
+
+
+ARMAZENAMENTO ATUAL: XH_STORAGE_BACKEND=b2. Backblaze B2 usa API S3 com bucket privado. Configure B2_REGION, B2_ENDPOINT_URL, B2_KEY_ID, B2_APPLICATION_KEY e B2_BUCKET. Originais são preservados; cópias publicadas podem ser removidas após a retenção configurada e confirmação do histórico de publicação. Não depende de recibo Android.
