@@ -49,6 +49,24 @@ test("lock distribuído com fencing", async () => {
 test("HTTP: auth, X-Requested-With, 409 em fenced, painel", async () => {
   const co = mk(), env = { EXEC_TOKEN: "E".repeat(24), ADMIN_TOKEN: "A".repeat(24), DB: co.db };
   const call = (p, body, tok = env.EXEC_TOKEN, xr = "XHK") => handle(new Request("http://x" + p, { method: body ? "POST" : "GET", body: body ? JSON.stringify(body) : undefined, headers: { authorization: "Bearer " + tok, ...(xr ? { "x-requested-with": xr } : {}) } }), env, co);
+  const lockBody = { name: "kaggle-launch", owner: "github-action", ttl: 60 };
+  assert.equal((await (await call("/api/state")).json()).launch_enabled, false);
+  assert.equal((await call("/api/admin/kaggle-launch", { enabled: true }, env.EXEC_TOKEN)).status, 401);
+  assert.equal((await call("/api/admin/kaggle-launch", { enabled: "true" }, env.ADMIN_TOKEN)).status, 400);
+  assert.equal((await call("/api/admin/kaggle-launch", { enabled: true }, env.ADMIN_TOKEN)).status, 200);
+  assert.equal((await (await call("/api/state")).json()).launch_enabled, true);
+  assert.equal((await call("/api/admin/kaggle-launch", { enabled: false }, env.ADMIN_TOKEN)).status, 200);
+  assert.equal((await (await call("/api/state")).json()).launch_enabled, false);
+  for (const op of ["acquire", "renew", "release"]) {
+    assert.equal((await call(`/api/exec/lock/${op}`, lockBody, env.EXEC_TOKEN)).status, 401);
+  }
+  const acquired = await call("/api/exec/lock/acquire", lockBody, env.ADMIN_TOKEN);
+  assert.equal(acquired.status, 200);
+  const lock = await acquired.json();
+  assert.equal(typeof lock.fence, "number");
+  const fencedBody = { ...lockBody, fence: lock.fence };
+  assert.equal((await call("/api/exec/lock/renew", fencedBody, env.ADMIN_TOKEN)).status, 200);
+  assert.equal((await call("/api/exec/lock/release", fencedBody, env.ADMIN_TOKEN)).status, 200);
   assert.equal((await call("/api/state", null, "ruim")).status, 401); assert.equal((await call("/api/state", null, env.EXEC_TOKEN, "")).status, 401);
   await call("/api/exec/register", { executor: "e", provider: "local", caps: {}, session_seconds: 3600 });
   await call("/api/exec/submit", { kind: "x", payload: {}, key: "k" });

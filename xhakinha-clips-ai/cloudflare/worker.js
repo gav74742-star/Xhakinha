@@ -19,7 +19,13 @@ export async function handle(req, env, coord, DASH = "") {
     if ((m = path.match(/^\/api\/exec\/task\/(\w+)$/))) { const t = await coord.db.prepare("SELECT * FROM tasks WHERE id=?").bind(m[1]).first(); return t ? json(t) : json({ error: "not_found" }, 404); }
     if (req.method !== "POST") return json({ error: "método" }, 405);
     const b = await req.json();
+    if (path.startsWith("/api/admin/") && !isAdmin) return json({ error: "unauthorized" }, 401);
+    if (path.startsWith("/api/exec/lock/") && !isAdmin)
+      return json({ error: "unauthorized" }, 401);
     switch (path) {
+      case "/api/admin/kaggle-launch":
+        if (typeof b.enabled !== "boolean") return json({ error: "enabled deve ser boolean" }, 400);
+        return json(await coord.setLaunchEnabled(b.enabled));
       case "/api/exec/register": return json(await coord.register(b.executor, b.provider, b.caps, b.session_seconds));
       case "/api/exec/heartbeat": return json(await coord.heartbeat(b.executor, +b.used_seconds || 0));
       case "/api/exec/claim": return json({ task: await coord.claim(b.executor, b.time_left) });

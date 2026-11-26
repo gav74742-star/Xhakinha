@@ -23,3 +23,11 @@ CREATE TABLE IF NOT EXISTS history(
   outcome TEXT, ts REAL, seconds REAL, note TEXT);
 CREATE TABLE IF NOT EXISTS events(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, level TEXT, component TEXT, message TEXT);
+
+CREATE TABLE IF NOT EXISTS settings(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at REAL NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO settings(key,value,updated_at)
+VALUES('kaggle_launch_enabled','false',0);
