@@ -57,6 +57,14 @@ test("HTTP: auth, X-Requested-With, 409 em fenced, painel", async () => {
   assert.equal((await (await call("/api/state")).json()).launch_enabled, true);
   assert.equal((await call("/api/admin/kaggle-launch", { enabled: false }, env.ADMIN_TOKEN)).status, 200);
   assert.equal((await (await call("/api/state")).json()).launch_enabled, false);
+  // O Brain usa EXEC_TOKEN para seu lock operacional normal.
+  const brainLock = { name: "brain", owner: "brain-worker", ttl: 180 };
+  const brainAcquired = await call("/api/exec/lock/acquire", brainLock, env.EXEC_TOKEN);
+  assert.equal(brainAcquired.status, 200);
+  const brain = await brainAcquired.json();
+  const brainFenced = { ...brainLock, fence: brain.fence };
+  assert.equal((await call("/api/exec/lock/renew", brainFenced, env.EXEC_TOKEN)).status, 200);
+  assert.equal((await call("/api/exec/lock/release", brainFenced, env.EXEC_TOKEN)).status, 200);
   for (const op of ["acquire", "renew", "release"]) {
     assert.equal((await call(`/api/exec/lock/${op}`, lockBody, env.EXEC_TOKEN)).status, 401);
   }

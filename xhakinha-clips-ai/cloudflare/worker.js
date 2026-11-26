@@ -20,7 +20,9 @@ export async function handle(req, env, coord, DASH = "") {
     if (req.method !== "POST") return json({ error: "método" }, 405);
     const b = await req.json();
     if (path.startsWith("/api/admin/") && !isAdmin) return json({ error: "unauthorized" }, 401);
-    if (path.startsWith("/api/exec/lock/") && !isAdmin)
+    // O Brain usa EXEC_TOKEN para seu lock operacional normal.
+    // Somente o lock reservado do disparo do Kaggle exige ADMIN_TOKEN.
+    if (path.startsWith("/api/exec/lock/") && b.name === "kaggle-launch" && !isAdmin)
       return json({ error: "unauthorized" }, 401);
     switch (path) {
       case "/api/admin/kaggle-launch":
