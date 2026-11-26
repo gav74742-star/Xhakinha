@@ -201,3 +201,52 @@ def test_main_bloqueia_se_autorizacao_for_revogada_apos_trava(monkeypatch):
     assert len(calls) == 2
     assert calls[0][0].endswith("/acquire")
     assert calls[1][0].endswith("/release")
+
+
+def test_main_bloqueia_se_autorizacao_ja_esta_desativada(monkeypatch):
+    import kaggle_trigger
+
+    monkeypatch.setenv("XH_COORD_URL", "https://coordenador.test")
+    monkeypatch.setenv("XH_ADMIN_TOKEN", "token-teste")
+
+    chamadas_get = []
+
+    class Resposta:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"launch_enabled": False}
+
+    def get(url, **kwargs):
+        chamadas_get.append(url)
+        return Resposta()
+
+    monkeypatch.setattr(kaggle_trigger.requests, "get", get)
+    monkeypatch.setattr(
+        kaggle_trigger.requests,
+        "post",
+        lambda *args, **kwargs: pytest.fail(
+            "Não deveria adquirir nem liberar bloqueio."
+        ),
+    )
+    monkeypatch.setattr(
+        kaggle_trigger,
+        "decide",
+        lambda *args, **kwargs: pytest.fail(
+            "Não deveria avaliar o disparo."
+        ),
+    )
+    monkeypatch.setattr(
+        kaggle_trigger,
+        "validate_kaggle_payload",
+        lambda: pytest.fail("Não deveria validar o notebook."),
+    )
+    monkeypatch.setattr(
+        kaggle_trigger.subprocess,
+        "call",
+        lambda *args, **kwargs: pytest.fail("Não deveria chamar o Kaggle."),
+    )
+
+    assert kaggle_trigger.main() == 0
+    assert chamadas_get == ["https://coordenador.test/api/state"]
