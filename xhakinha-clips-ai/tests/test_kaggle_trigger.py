@@ -67,18 +67,17 @@ def test_payload_rejeita_sintaxe_python_invalida(tmp_path):
         validate_kaggle_payload(root)
 
 
-def test_payload_rejeita_inicio_ativado_por_padrao(tmp_path):
+def test_payload_rejeita_gate_manual_obsoleto(tmp_path):
     root = _payload(tmp_path)
     path, nb = _notebook(root)
     last = [c for c in nb["cells"] if c.get("cell_type") == "code"][-1]
     source = "".join(last["source"])
-    last["source"] = source.replace(
-        "INICIAR_KAGGLE_WORKER = False", "INICIAR_KAGGLE_WORKER = True", 1
-    )
+    marker = 'AUTORIZACAO_REMOTA = remote_state.get("launch_enabled") is True'
+    assert source.count(marker) == 1
+    last["source"] = source.replace(marker, "INICIAR_KAGGLE_WORKER = False\n" + marker, 1)
     _write(path, nb)
-    with pytest.raises(SystemExit, match="gate de inicialização incompleto"):
+    with pytest.raises(SystemExit, match="gate manual obsoleto"):
         validate_kaggle_payload(root)
-
 
 def test_payload_rejeita_main_fora_do_ultimo_gate(tmp_path):
     root = _payload(tmp_path)

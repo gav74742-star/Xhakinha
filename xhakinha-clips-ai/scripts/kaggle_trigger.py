@@ -102,8 +102,8 @@ def _main_calls(tree: ast.AST) -> list[ast.Call]:
 def validate_kaggle_payload(root: Path | str = Path("kaggle")) -> dict:
     """Validate the authorized Kaggle payload without enforcing a cell count.
 
-    The only execution gate is the last code cell. It must default to False,
-    guard the sole main() invocation in the else branch, and recheck the
+    The only execution gate is remote D1 authorization in the last code cell.
+    It guards the sole main() invocation in the else branch and rechecks the
     B2/Turso/15B/15C/15D prerequisites before allowing startup.
     """
     root = Path(root)
@@ -142,12 +142,13 @@ def validate_kaggle_payload(root: Path | str = Path("kaggle")) -> dict:
         raise SystemExit("BLOQUEADO: notebook não contém células de código.")
 
     last_source = code_cells[-1]
+    if "INICIAR_KAGGLE_WORKER" in last_source:
+        raise SystemExit("BLOQUEADO: gate manual obsoleto.")
     required_markers = (
-        "INICIAR_KAGGLE_WORKER = False",
         'AUTORIZACAO_REMOTA = remote_state.get("launch_enabled") is True',
         'urllib.request.urlopen(req, timeout=20)',
         'coord_url + "/api/state"',
-        "if not INICIAR_KAGGLE_WORKER or not AUTORIZACAO_REMOTA:",
+        "if not AUTORIZACAO_REMOTA:",
         'XH.get("etapa15_preflight_ok") is not True',
         'XH.get("etapa15c_ok") is not True',
         'XH.get("snapshot_bootstrap_ok") is not True',
@@ -169,24 +170,16 @@ def validate_kaggle_payload(root: Path | str = Path("kaggle")) -> dict:
         raise SystemExit("BLOQUEADO: main() precisa estar somente no último bloco de código.")
 
     guard = next(
-        (
-            node
-            for node in trees[-1].body
-            if isinstance(node, ast.If)
-            and isinstance(node.test, ast.BoolOp)
-            and isinstance(node.test.op, ast.Or)
-            and any(
-                isinstance(value, ast.UnaryOp)
-                and isinstance(value.op, ast.Not)
-                and isinstance(value.operand, ast.Name)
-                and value.operand.id == "INICIAR_KAGGLE_WORKER"
-                for value in node.test.values
-            )
-        ),
+        (node for node in trees[-1].body
+         if isinstance(node, ast.If)
+         and isinstance(node.test, ast.UnaryOp)
+         and isinstance(node.test.op, ast.Not)
+         and isinstance(node.test.operand, ast.Name)
+         and node.test.operand.id == "AUTORIZACAO_REMOTA"),
         None,
     )
     if guard is None:
-        raise SystemExit("BLOQUEADO: não foi encontrado o gate manual/remoto de inicialização.")
+        raise SystemExit("BLOQUEADO: não foi encontrado o gate remoto D1 de inicialização.")
     if _main_calls(ast.Module(body=guard.body, type_ignores=[])):
         raise SystemExit("BLOQUEADO: main() aparece no ramo que deveria bloquear a inicialização.")
     if len(_main_calls(ast.Module(body=guard.orelse, type_ignores=[]))) != 1:
@@ -201,7 +194,7 @@ def validate_kaggle_payload(root: Path | str = Path("kaggle")) -> dict:
     print(
         "Notebook autorizado validado: "
         f"{info['physical_cells']} células físicas, "
-        f"{info['code_cells']} células de código; gate manual protegido."
+        f"{info['code_cells']} células de código; gate remoto D1 validado."
     )
     return info
 
