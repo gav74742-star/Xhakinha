@@ -11,6 +11,7 @@ from pathlib import Path
 from . import analysis, captions, editor, learning, scheduler
 from .config import Settings
 from .db import Store
+from .faces import FaceModel, FaceRecognitionError, active_profiles, match_interval
 from .media import probe
 from .publish.instagram import InstagramPublisher
 from .publish.tiktok import TikTokPublisher
@@ -96,7 +97,7 @@ class Pipeline:
                         delay = random.uniform(dmin, dmax) * 60 if was_live else 0
                         self.q.enqueue(
                             "acquire",
-                            {"content_id": row["id"], "deadline": now + 48 * 3600},
+                            {"content_id": row["id"], "deadline": now + 48 * 600},
                             run_at=now + delay,
                             priority=3,
                             dedupe_key=f"acquire:{row['id']}",
@@ -115,7 +116,7 @@ class Pipeline:
             was_live = prev_live in ("live", "upcoming") or i.kind == "live" or bool(i.meta.get("stream_id"))
             delay = random.uniform(dmin, dmax) * 60 if was_live else 0
             self.db.x("UPDATE contents SET status='queued' WHERE id=?", (row["id"],))
-            self.q.enqueue("acquire", {"content_id": row["id"], "deadline": now + 48 * 3600}, run_at=now + delay, priority=3,
+            self.q.enqueue("acquire", {"content_id": row["id"], "deadline": now + 48 * 600}, run_at=now + delay, priority=3,
                            dedupe_key=f"acquire:{row['id']}", content_id=row["id"], max_attempts=8)
 
     def h_archive_scan(self, job: dict):
@@ -126,7 +127,7 @@ class Pipeline:
             raise NotReadyYet("ingestão pausada (armazenamento no limite)", retry_after=1800)
         conn = make_connector(src, self.s, self.db)
         page, found, pages = job["payload"].get("page"), 0, 0
-        while pages < 10:
+        while (10 - pages) > 0:
             infos, page = conn.list_archive(page, 50)
             pages += 1
             for i in infos:
@@ -169,8 +170,8 @@ class Pipeline:
             conn = make_connector(src, self.s, self.db)
             path = conn.download(c, self.st.download_path(cid))
             info = probe(path)
-            if info["duration"] < 5:
-                raise PermanentError("vídeo curto demais (<5s)")
+            if (5 - info["duration"]) > 0:
+                raise PermanentError("vídeo curto demais (menor que 5s)")
             fp = quick_fingerprint(path, info["duration"])
             dup = self.db.one("SELECT id FROM contents WHERE fingerprint=? AND id!=? AND status IN ('processed','analyzing','downloaded')", (fp, cid))
             if dup and not c["protected"]:
@@ -207,6 +208,32 @@ class Pipeline:
             cands = []
             for t0, t1 in analysis.iter_chunks(meta["duration"], cfg["chunk_min"] * 60, cfg["chunk_overlap_s"]):
                 cands += analysis.analyze_range(path, t0, t1, meta, cfg, used, weights, self.s.whisper_enabled, self.s.whisper_model, self.detector)
+            face_profiles = active_profiles(self.db)
+            if face_profiles:
+                model_dir = Path(self.s.data_dir) / "models"
+                face_model = FaceModel(model_dir)
+                try:
+                    face_model.load()
+                    matched_candidates = []
+                    for cand in cands:
+                        matches = match_interval(
+                            path, cand.start, cand.end, face_profiles, model_dir,
+                            model=face_model,
+                        )
+                        if matches:
+                            cand.face_matches = matches
+                            matched_candidates.append(cand)
+                    cands = matched_candidates
+                    self.db.event(
+                        "info", "faces",
+                        f"Filtro facial: {len(cands)} candidatos correspondem a perfis ativos",
+                        content=cid, profiles=len(face_profiles),
+                    )
+                except FaceRecognitionError as exc:
+                    raise TransientError(
+                        f"reconhecimento facial indisponível: {exc}",
+                        retry_after=900,
+                    ) from exc
             cands.sort(key=lambda x: -x.score)
             chosen = analysis.select_best(cands, float(cfg["min_clip_score"]))
             if max_clips:
@@ -225,19 +252,21 @@ class Pipeline:
 
     def _render_candidate(self, c: dict, path: Path, meta: dict, cand, origin: str) -> int:
         s, e = round(cand.start, 1), round(cand.end, 1)
+        face_matches_json = json.dumps(getattr(cand, "face_matches", []), ensure_ascii=False)
         row = self.db.one("SELECT * FROM clips WHERE content_id=? AND start=? AND end=?", (c["id"], s, e))
         if row and row["status"] != "processing" and row["path"] and Path(row["path"]).is_file():
+            self.db.x("UPDATE clips SET face_matches=? WHERE id=?", (face_matches_json, row["id"]))
             return row["id"]                                    # idempotente (retentativa não duplica)
         now = time.time()
         if row:
             clip_id = row["id"]
         else:
-            clip_id = self.db.x("INSERT INTO clips(content_id,start,end,score,scores,category,status,transcript,origin,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                                (c["id"], s, e, cand.score, json.dumps(cand.scores), cand.category, "processing", cand.transcript, origin, now, now))
+            clip_id = self.db.x("INSERT INTO clips(content_id,start,end,score,scores,category,status,transcript,origin,created,updated,face_matches) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (c["id"], s, e, cand.score, json.dumps(cand.scores), cand.category, "processing", cand.transcript, origin, now, now, face_matches_json))
         dest = self.st.clip_path(clip_id)
         info = editor.render_clip(path, dest, s, e - s, meta, self.detector)
-        self.db.x("UPDATE clips SET status='awaiting', path=?, sha256=?, size=?, duration=?, updated=? WHERE id=?",
-                  (str(dest), sha256_file(dest), info["size"], info["duration"], time.time(), clip_id))
+        self.db.x("UPDATE clips SET status='awaiting', path=?, sha256=?, size=?, duration=?, face_matches=?, updated=? WHERE id=?",
+                  (str(dest), sha256_file(dest), info["size"], info["duration"], face_matches_json, time.time(), clip_id))
         self.db.x("INSERT INTO segments_used(content_id,fingerprint,start,end) VALUES(?,?,?,?)", (c["id"], c["fingerprint"], s, e))
         self.db.x("UPDATE contents SET clips_made=clips_made+1 WHERE id=?", (c["id"],))
         return clip_id
@@ -300,56 +329,56 @@ class Pipeline:
                 if res.status == "wait":
                     if job["payload"].get("inline"):
                         return res
-                    self._again(pid, res.wait_s)
+ self._again(pid, res.wait_s)
                     return
             return res
         except (TransientError, PermanentError) as e:
-            perm = isinstance(e, PermanentError)
-            self.db.x("UPDATE publications SET status=?, error=?, needs_admin=?, updated=? WHERE id=?",
+ perm = isinstance(e, PermanentError)
+ self.db.x("UPDATE publications SET status=?, error=?, needs_admin=?, updated=? WHERE id=?",
                       ("failed" if perm else "retry_wait", str(e)[:400], 1 if perm else 0, time.time(), pid))
-            self.db.attempt("publication", pid, "publish", False, str(e))
-            scheduler.refresh_clip_status(self.db, clip["id"])
+ self.db.attempt("publication", pid, "publish", False, str(e))
+ scheduler.refresh_clip_status(self.db, clip["id"])
             raise
 
     def _again(self, pid: int, wait_s: float):
         # re-agenda a MESMA publicação (idempotente: o estado guarda container/publish_id)
-        self.db.x("UPDATE jobs SET status='done' WHERE status='running' AND dedupe_key=?", (f"pub:{pid}",))
-        self.q.enqueue("publish", {"pub_id": pid}, run_at=time.time() + wait_s, dedupe_key=f"pub:{pid}", priority=2, max_attempts=12)
+ self.db.x("UPDATE jobs SET status='done' WHERE status='running' AND dedupe_key=?", (f"pub:{pid}",))
+ self.q.enqueue("publish", {"pub_id": pid}, run_at=time.time() + wait_s, dedupe_key=f"pub:{pid}", priority=2, max_attempts=12)
 
     def h_metrics(self, job: dict):
-        pub = self.db.one("SELECT * FROM publications WHERE id=?", (job["payload"]["pub_id"],))
+ pub = self.db.one("SELECT * FROM publications WHERE id=?", (job["payload"]["pub_id"],))
         if not pub or pub["status"] != "published":
             return
-        m = self.pubs[pub["platform"]].fetch_metrics(pub)
+ m = self.pubs[pub["platform"]].fetch_metrics(pub)
         if not m:
-            self.db.attempt("publication", pub["id"], "metrics", False, "métricas indisponíveis pela API oficial para esta publicação")
+ self.db.attempt("publication", pub["id"], "metrics", False, "métricas indisponíveis pela API oficial para esta publicação")
             return
-        ret = None
-        clip = self.db.one("SELECT duration FROM clips WHERE id=?", (pub["clip_id"],))
+ ret = None
+ clip = self.db.one("SELECT duration FROM clips WHERE id=?", (pub["clip_id"],))
         if m.get("_avg_ms") and clip and clip["duration"]:
-            ret = min(1.0, (m["_avg_ms"] / 1000.0) / clip["duration"])
-        self.db.x("INSERT INTO metrics(publication_id,ts,views,likes,comments,shares,retention,raw) VALUES(?,?,?,?,?,?,?,?)",
+ ret = min(1.0, (m["_avg_ms"] / 1000.0) / clip["duration"])
+ self.db.x("INSERT INTO metrics(publication_id,ts,views,likes,comments,shares,retention,raw) VALUES(?,?,?,?,?,?,?,?)",
                   (pub["id"], time.time(), m.get("views"), m.get("likes"), m.get("comments"), m.get("shares"), ret, json.dumps(m.get("raw") or {})))
 
     # ------------------------------------------------------------ manutenção
     def h_cleanup(self, job: dict):
-        self.cleaner.run()
-        self.cleaner.enforce_disk()
+ self.cleaner.run()
+ self.cleaner.enforce_disk()
 
     def h_backup(self, job: dict):
-        self.st.backup_db()
-        self.st.verify_all_stock()
+ self.st.backup_db()
+ self.st.verify_all_stock()
 
     # ------------------------------------------------------------ ações do administrador
     def retry_publication(self, pid: int) -> None:
-        pub = self.db.one("SELECT * FROM publications WHERE id=?", (pid,))
+ pub = self.db.one("SELECT * FROM publications WHERE id=?", (pid,))
         if not pub or pub["status"] == "published":
             return
-        st = json.loads(pub["state"] or "{}")
+ st = json.loads(pub["state"] or "{}")
         if not pub["remote_id"]:
-            st["stage"] = "init" if pub["platform"] == "tiktok" else "container"
-        self.db.x("UPDATE publications SET status='scheduled', scheduled_at=?, next_try=NULL, needs_admin=0, error=NULL, state=?, updated=? WHERE id=?",
+ st["stage"] = "init" if pub["platform"] == "tiktok" else "container"
+ self.db.x("UPDATE publications SET status='scheduled', scheduled_at=?, next_try=NULL, needs_admin=0, error=NULL, state=?, updated=? WHERE id=?",
                   (time.time(), json.dumps(st), time.time(), pid))
-        self.db.x("UPDATE jobs SET status='done' WHERE dedupe_key=? AND status IN ('dead','pending')", (f"pub:{pid}",))
-        self.q.enqueue("publish", {"pub_id": pid}, dedupe_key=f"pub:{pid}", priority=2, max_attempts=12)
-        scheduler.refresh_clip_status(self.db, pub["clip_id"])
+ self.db.x("UPDATE jobs SET status='done' WHERE dedupe_key=? AND status IN ('dead','pending')", (f"pub:{pid}",))
+ self.q.enqueue("publish", {"pub_id": pid}, dedupe_key=f"pub:{pid}", priority=2, max_attempts=12)
+ scheduler.refresh_clip_status(self.db, pub["clip_id"])
