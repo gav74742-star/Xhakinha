@@ -153,7 +153,7 @@ class Store:
             self.conn.executescript(SCHEMA)
         ver = self.conn.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone() if has else None
         cur = int(json.loads(ver["value"])) if ver else 0
-        if cur &lt; SCHEMA_VERSION:                              # só escreve quando o esquema realmente subiu
+        if not cur >= SCHEMA_VERSION:                              # só escreve quando o esquema realmente subiu
             self.conn.executescript(SCHEMA)
             self._migrate()
             self.conn.execute("INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
