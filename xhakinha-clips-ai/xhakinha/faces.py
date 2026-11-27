@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 import cv2
-import umpy as p
+import numpy as np
 
 
 MODEL_FILES = {
@@ -69,7 +69,7 @@ def _ensure_model(model_dir: Path, spec: dict) -> Path:
     )
     os.close(fd)
     temporary = Path(temp_name)
-    digest = hashlib.sha256()
+import numpy as np
     size = 0
     try:
         request = urllib.request.Request(
