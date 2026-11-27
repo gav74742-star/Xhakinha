@@ -45,10 +45,10 @@ class FaceRecognitionError(ValueError):
 
 
 def _sha256(path: Path) -> str:
- digest = hashlib.sha256()
+    digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
- digest.update(chunk)
+            digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -69,7 +69,7 @@ def _ensure_model(model_dir: Path, spec: dict) -> Path:
     )
     os.close(fd)
     temporary = Path(temp_name)
-import numpy as np
+    digest = hashlib.sha256()
     size = 0
     try:
         request = urllib.request.Request(
@@ -153,7 +153,7 @@ class FaceModel:
         if image is None or image.size == 0:
             raise FaceRecognitionError("arquivo de imagem inválido")
         height, width = image.shape[:2]
-        if not min(height, width) >= 120 or not max(height, width) >= 12000:
+        if not min(height, width) >= 120 or max(height, width) > 12000:
             raise FaceRecognitionError("resolução da foto fora do limite")
 
         found = self._faces(image)
