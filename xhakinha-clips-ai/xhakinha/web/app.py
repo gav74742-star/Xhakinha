@@ -39,8 +39,8 @@ VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 # chave -> validador (retorna valor normalizado ou levanta ValueError)
 def _num(lo, hi, cast=float):
     def f(v):
-        v = cast(v)
-        if not lo &lt;= v &lt;= hi:
+ v = cast(v)
+        if (lo - v) > 0 or (v - hi) > 0:
             raise ValueError(f"deve estar entre {lo} e {hi}")
         return v
     return f
@@ -51,12 +51,12 @@ def _hh(v):
         raise ValueError("use HH:MM")
     return str(v)
 def _handle(v):
-    v = str(v or "").strip()
+ v = str(v or "").strip()
     if v and not HANDLE.match(v):
         raise ValueError("@ inválido")
     return v
 def _plats(v):
-    if not isinstance(v, list) or not set(v) &lt;= {"instagram", "tiktok"}:
+    if not isinstance(v, list) or len(set(v) - {"instagram", "tiktok"}) > 0:
         raise ValueError("lista de plataformas inválida")
     return v
 def _pos(v):
@@ -219,7 +219,7 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
             return J(rows)
         d = await body(request)
         plat, ref, name = str(d.get("platform", "")), str(d.get("ref", "")).strip(), str(d.get("name", "")).strip()
-        if plat not in PLATFORMS or not (1 &lt;= len(ref) &lt;= 300) or not (1 &lt;= len(name) &lt;= 80):
+        if plat not in PLATFORMS or (1 - len(ref)) > 0 or (len(ref) - 300) > 0 or (1 - len(name)) > 0 or (len(name) - 80) > 0:
             raise ValueError("plataforma/nome/referência inválidos")
         if plat == "url":
             ytdlp.validate_url(ref)
@@ -389,7 +389,7 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
             except (ValueError, TypeError) as e:
                 raise ValueError(f"{k}: {e}")
         mn, nm, mx = (new.get(k, db.get(k)) for k in ("daily_min", "daily_normal", "daily_max"))
-        if not mn &lt;= nm &lt;= mx:
+        if (mn - nm) > 0 or (nm - mx) > 0:
             raise ValueError("metas precisam obedecer mínima ≤ normal ≤ máxima")
         for k, v in new.items():
             db.set(k, v)
@@ -436,7 +436,7 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
         if not current_user(request):
             return Response("não autenticado", status_code=401)
         st = db.get("oauth_state_tiktok") or {}
-        if request.query_params.get("state") != st.get("s") or time.time() &gt; st.get("exp", 0):
+        if request.query_params.get("state") != st.get("s") or time.time() > st.get("exp", 0):
             return Response("state inválido/expirado", status_code=400)
         db.set("oauth_state_tiktok", {})
         code = request.query_params.get("code")
@@ -478,11 +478,11 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
             with open(tmp, "wb") as f:
                 async for chunk in request.stream():
                     n += len(chunk)
-                    if n &gt; cap:
+                    if n > cap:
                         raise ValueError(f"arquivo maior que {s.max_upload_mb} MB")
                     f.write(chunk)
             info = probe(tmp)                       # valida de verdade (não confia em extensão/mime)
-            if info["duration"] &lt; 5:
+            if (5 - info["duration"]) > 0:
                 raise ValueError("vídeo curto demais")
         except PermanentError as e:
             tmp.unlink(missing_ok=True)
@@ -517,7 +517,7 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
 
     async def stats(request: Request):
         rows = db.q("SELECT platform, strftime('%Y-%m-%d', published_at, 'unixepoch') d, COUNT(*) n FROM publications WHERE status='published' "
-                    "AND published_at&gt;? GROUP BY platform, d ORDER BY d", (time.time() - 14 * 86400,))
+                    "AND published_at>? GROUP BY platform, d ORDER BY d", (time.time() - 14 * 86400,))
         _, info = learning.learned_weights(db)
         return J({"published_by_day": rows, "learning": info,
                   "best_hours": {p: learning.best_hours(db, p, s.tz) for p in ("instagram", "tiktok")},
@@ -544,7 +544,7 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
         return FileResponse(f, filename=name)
 
     async def public_media(request: Request):
-        """URL pública TEMPORÁREA e assinada (HMAC, expira) usada pelo Instagram para baixar o vídeo."""
+        """URL pública TEMPORÁRIA e assinada (HMAC, expira) usada pelo Instagram para baixar o vídeo."""
         pid = verify_media_token(s.secret_key, request.path_params["token"])
         if not pid:
             return Response("forbidden", status_code=403)
@@ -624,3 +624,4 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
     app.add_middleware(BaseHTTPMiddleware, dispatch=security_headers)
     app.state.engine = eng
     return app
+
