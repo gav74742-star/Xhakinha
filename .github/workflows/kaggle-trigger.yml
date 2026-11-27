@@ -1,6 +1,8 @@
 name: kaggle-trigger
 
 on:
+  schedule:
+    - cron: "*/30 * * * *"
   workflow_dispatch:
 
 concurrency:

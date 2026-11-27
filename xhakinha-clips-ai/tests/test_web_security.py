@@ -69,7 +69,7 @@ def test_login_cookie_flags_bruteforce_lock_and_csrf(server, engine):
 
 def test_forged_token_rejected(server, engine):
     import jwt
-    forged = jwt.encode({"sub": "admin", "exp": int(time.time()) + 999}, "changeme", algorithm="HS256")
+    forged = jwt.encode({"sub": "admin", "exp": int(time.time()) + 999}, "x" * 32, algorithm="HS256")
     r = requests.get(server + "/api/status", cookies={"xh_session": forged})
     assert r.status_code == 401
     none_tok = jwt.encode({"sub": "admin", "exp": int(time.time()) + 999}, "", algorithm="none")

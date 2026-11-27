@@ -12,7 +12,7 @@ import requests
 import uvicorn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from kaggle_trigger import decide  # noqa: E402
+from kaggle_trigger import decide, validate_kaggle_payload  # noqa: E402
 from xhakinha.cloud import runner
 from xhakinha.cloud.api import create_app
 from xhakinha.cloud.coordinator import Coordinator
@@ -34,7 +34,9 @@ def test_notebooks_sao_json_valido_e_celulas_de_codigo_compilam():
     assert meta["code_file"] == "kaggle_worker.ipynb" and meta["enable_internet"] == "true" and meta["is_private"] == "true"
     canonical = json.loads((ROOT / "kaggle/kaggle_worker.ipynb").read_text())
     assert canonical["nbformat"] == 4
-    assert len(canonical["cells"]) == 32
+    result = validate_kaggle_payload(ROOT / "kaggle")
+    assert result["physical_cells"] == len(canonical["cells"])
+    assert result["main_calls"] == 1
     for cell in canonical["cells"]:
         if cell["cell_type"] == "code":
             compile("".join(cell["source"]), "kaggle/kaggle_worker.ipynb", "exec")
@@ -49,7 +51,7 @@ def test_provedor_detectado_pelo_ambiente():
 def test_healthcheck_honesto():
     r = local_report()
     assert set(["ffmpeg", "whisper", "faces", "gpu", "disk_free_gb", "ok"]) <= set(r)
-    assert r["gpu"] is False and r["ffmpeg"] is True                   # este sandbox não tem GPU
+    assert isinstance(r["gpu"], bool) and r["ffmpeg"] is True            # GPU depende do executor real
 
 
 def test_gatilho_so_inicia_com_tarefa_gpu_elegivel():
@@ -94,7 +96,7 @@ def test_sessao_completa_cerebro_cria_snapshot_e_libera_lock(tmp_path, monkeypat
     env = {"SECRET_KEY": "k" * 48, "DATA_DIR": str(tmp_path / "data"), "XH_ENV": "test", "COOKIE_SECURE": "0",
            "XH_PROVIDER": "local", "XH_SESSION_HOURS": "0.1",
            "XH_STORAGE_BACKEND": "local", "XH_LOCAL_RUNTIME_DIR": str(tmp_path / "drive"),
-           "XH_COORD_URL": f"http://127.0.0.1:{port}", "XH_COORD_TOKEN": "E" * 24, "MIN_FREE_GB": "0.01"}
+           "XH_STATE_BACKEND": "sqlite", "XH_COORD_URL": f"http://127.0.0.1:{port}", "XH_COORD_TOKEN": "E" * 24, "MIN_FREE_GB": "0.01"}
     for k, v in env.items():
         monkeypatch.setenv(k, v)
     out = runner.main(env)

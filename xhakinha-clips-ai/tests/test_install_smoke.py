@@ -43,7 +43,7 @@ def test_setup_generates_strong_secret_and_server_boots_login_and_restart_persis
     secret = [l for l in envf.read_text().splitlines() if l.startswith("SECRET_KEY=")][0].split("=", 1)[1]
     assert len(secret) >= 48
     assert run([sys.executable, "scripts/setup.py"], clean_copy).returncode != 0          # não sobrescreve sem --force
-    env = {"SECRET_KEY": secret, "DATA_DIR": str(tmp_path / "data"), "COOKIE_SECURE": "0", "PORT": str(free_port()), "HOST": "127.0.0.1", "XH_ENV": "test"}
+    env = {"SECRET_KEY": secret, "DATA_DIR": str(tmp_path / "data"), "COOKIE_SECURE": "0", "PORT": str(free_port()), "HOST": "127.0.0.1", "XH_ENV": "test", "XH_STATE_BACKEND": "sqlite"}
     # 3) cria admin via CLI
     r = run([sys.executable, "-m", "xhakinha.cli", "create-admin"], clean_copy, {**env, "ADMIN_USER": "dono", "ADMIN_PASSWORD": "senha-super-longa-99"}); assert r.returncode == 0, r.stderr
     r = run([sys.executable, "-m", "xhakinha.cli", "doctor"], clean_copy, env); assert "ffmpeg: True" in r.stdout

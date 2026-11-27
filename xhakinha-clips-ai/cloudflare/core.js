@@ -46,6 +46,16 @@ export function backoff(attempt, base = 30, cap = 3600) { return Math.min(cap, b
 
 export class Coord {
   constructor(db, clock = () => Date.now() / 1000) { this.db = db; this.now = clock; }
+  async launchEnabled() {
+    const row = await first(this.db, "SELECT value FROM settings WHERE key=?", "kaggle_launch_enabled");
+    return row?.value === "true";
+  }
+  async setLaunchEnabled(enabled) {
+    if (typeof enabled !== "boolean") throw Object.assign(new Error("enabled deve ser boolean"), { status: 400 });
+    await run(this.db, "INSERT INTO settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+      "kaggle_launch_enabled", String(enabled), this.now());
+    return { enabled };
+  }
   async provider(name) {
     let p = await first(this.db, "SELECT * FROM providers WHERE name=?", name);
     if (!p) { await run(this.db, "INSERT OR IGNORE INTO providers(name,config) VALUES(?,?)", name, J(DEFAULTS[name] || DEFAULTS.colab)); p = await first(this.db, "SELECT * FROM providers WHERE name=?", name); }
@@ -161,13 +171,14 @@ export class Coord {
   async lockRelease(name, owner, fence) { await run(this.db, "UPDATE locks SET owner=NULL, lease_until=0 WHERE name=? AND owner=? AND fence=?", name, owner, fence); return { ok: true }; }
   async state() {
     const now = this.now(), provs = [];
+    const launch_enabled = await this.launchEnabled();
     for (const [name, cfg] of Object.entries(DEFAULTS)) {
       await run(this.db, "INSERT OR IGNORE INTO providers(name,config) VALUES(?,?)", name, J(cfg));
     }
     for (const p of await all(this.db, "SELECT * FROM providers ORDER BY name")) { const cfg = JSON.parse(p.config); provs.push({ name: p.name, breaker: p.breaker, failures: p.failures, paused: p.paused_until > now, usage_s: await this.usage(p.name), config: cfg, uncertain: !cfg.known }); }
     const counts = {}; for (const r of await all(this.db, "SELECT status, count(*) n FROM tasks GROUP BY status")) counts[r.status] = r.n;
     const exs = (await all(this.db, "SELECT id,provider,status,last_seen,session_deadline FROM executors ORDER BY last_seen DESC LIMIT 30")).map(e => ({ ...e, seen_ago_s: Math.round(now - (e.last_seen || now)), time_left_s: e.session_deadline ? Math.round(e.session_deadline - now) : null }));
-    return { now, counts, providers: provs, executors: exs,
+    return { now, launch_enabled, counts, providers: provs, executors: exs,
       tasks: await all(this.db, "SELECT id,kind,status,priority,needs,prefer,run_after,est_seconds,created,owner,fence,attempts,lease_until,error,updated FROM tasks WHERE status IN ('running','queued','dead') ORDER BY priority DESC, created LIMIT 60"),
       locks: await all(this.db, "SELECT name,owner,fence,lease_until FROM locks"), events: await all(this.db, "SELECT ts,level,component,message FROM events ORDER BY id DESC LIMIT 40"),
       history: await all(this.db, "SELECT task_id,executor,provider,outcome,ts,seconds,note FROM history ORDER BY id DESC LIMIT 40") };
