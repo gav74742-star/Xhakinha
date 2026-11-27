@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS clips(
   id INTEGER PRIMARY KEY, content_id INTEGER REFERENCES contents(id), start REAL, end REAL, score REAL,
   scores TEXT DEFAULT '{}', category TEXT, status TEXT NOT NULL, path TEXT, sha256 TEXT, size INTEGER,
   duration REAL, transcript TEXT, origin TEXT, description TEXT, hashtags TEXT, created REAL,
-  updated REAL, error TEXT, UNIQUE(content_id, start, end));
+  updated REAL, error TEXT, face_matches TEXT NOT NULL DEFAULT '[]', UNIQUE(content_id, start, end));
 CREATE TABLE IF NOT EXISTS publications(
   id INTEGER PRIMARY KEY, clip_id INTEGER NOT NULL REFERENCES clips(id), platform TEXT NOT NULL,
   status TEXT NOT NULL, scheduled_at REAL, attempts INTEGER DEFAULT 0, next_try REAL,
@@ -62,6 +62,12 @@ CREATE TABLE IF NOT EXISTS metrics(
 CREATE TABLE IF NOT EXISTS segments_used(id INTEGER PRIMARY KEY, content_id INTEGER, fingerprint TEXT, start REAL, end REAL);
 CREATE TABLE IF NOT EXISTS realtests(id INTEGER PRIMARY KEY, started REAL, finished REAL, status TEXT, platform TEXT, steps TEXT DEFAULT '[]', result TEXT DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS logins(ip TEXT, ts REAL);
+CREATE TABLE IF NOT EXISTS face_profiles(
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, consent_version TEXT NOT NULL,
+  consent_scope TEXT NOT NULL, consent_recorded REAL NOT NULL, consent_by TEXT NOT NULL,
+  consent_expires REAL, revoked_at REAL, threshold REAL NOT NULL DEFAULT 0.50,
+  reference_count INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL, updated REAL NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_face_profiles_active ON face_profiles(revoked_at, consent_expires);
 """
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -91,7 +97,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
-SCHEMA_VERSION = 3          # 3 = colunas drive_path (clips/contents). Sobe quando o esquema mudar.
+SCHEMA_VERSION = 4          # 4 = face_profiles e face_matches, além de drive_path.
 DBError = (sqlite3.Error, dbdriver.DbUnavailable)
 
 
@@ -122,9 +128,13 @@ class Store:
         return {r["name"] for r in self.conn.execute(f"SELECT name FROM pragma_table_info('{table}')").fetchall()}
 
     def _migrate(self) -> None:
-        for tbl, col in (("clips", "drive_path"), ("contents", "drive_path")):
+        for tbl, col, ddl in (
+            ("clips", "drive_path", "TEXT"),
+            ("contents", "drive_path", "TEXT"),
+            ("clips", "face_matches", "TEXT NOT NULL DEFAULT '[]'"),
+        ):
             if col not in self._columns(tbl):
-                self.conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} TEXT")
+                self.conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
 
     def _init(self) -> None:
         if self.backend == "sqlite":
@@ -141,7 +151,7 @@ class Store:
             self.conn.executescript(SCHEMA)
         ver = self.conn.execute("SELECT value FROM settings WHERE key='schema_version'").fetchone() if has else None
         cur = int(json.loads(ver["value"])) if ver else 0
-        if cur < SCHEMA_VERSION:                              # só escreve quando o esquema realmente subiu
+        if cur &lt; SCHEMA_VERSION:                              # só escreve quando o esquema realmente subiu
             self.conn.executescript(SCHEMA)
             self._migrate()
             self.conn.execute("INSERT INTO settings(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
