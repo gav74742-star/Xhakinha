@@ -18,22 +18,22 @@ from conftest import SECRET
 
 
 def turso_settings(tmp_path, name="a", **kw):
- url = f"libsql://fake-{ ame}.turso.io"
- fake_libsql.install(url, tmp_path / f"{ ame}.db")
- s = Settings(secret_key=SECRET, data_dir=tmp_path / "data", env="test", cookie_secure=False,
- turso_url=url, turso_token="tok", state_backend="turso", **kw)
- s.validate()
+    url = f"libsql://fake-{name}.turso.io"
+    fake_libsql.install(url, tmp_path / f"{name}.db")
+    s = Settings(secret_key=SECRET, data_dir=tmp_path / "data", env="test", cookie_secure=False,
+                 turso_url=url, turso_token="tok", state_backend="turso", **kw)
+    s.validate()
     return s
 
 
 @pytest.fixture()
 def tstore(tmp_path, monkeypatch):
- monkeypatch.setenv("XH_TURSO_INIT", "1")
+    monkeypatch.setenv("XH_TURSO_INIT", "1")
     return Store(turso_settings(tmp_path))
 
 
 def test_schema_not_created_by_accident(tmp_path, monkeypatch):
- monkeypatch.delenv("XH_TURSO_INIT", raising=False)
+    monkeypatch.delenv("XH_TURSO_INIT", raising=False)
     with pytest.raises(ConfigError, match="turso_migrate.py init"):
         Store(turso_settings(tmp_path))
 
