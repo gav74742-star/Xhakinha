@@ -64,7 +64,8 @@ CREATE TABLE IF NOT EXISTS realtests(id INTEGER PRIMARY KEY, started REAL, finis
 CREATE TABLE IF NOT EXISTS logins(ip TEXT, ts REAL);
 CREATE TABLE IF NOT EXISTS face_profiles(
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, consent_version TEXT NOT NULL,
-  consent_scope TEXT NOT NULL, consent_recorded REAL NOT NULL, consent_by TEXT NOT NULL,
+  consent_scope TEXT NOT NULL, consent_evidence TEXT NOT NULL DEFAULT '',
+  consent_recorded REAL NOT NULL, consent_by TEXT NOT NULL,
   consent_expires REAL, revoked_at REAL, threshold REAL NOT NULL DEFAULT 0.50,
   reference_count INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL, updated REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_face_profiles_active ON face_profiles(revoked_at, consent_expires);
@@ -97,7 +98,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 }
 
 
-SCHEMA_VERSION = 4          # 4 = face_profiles e face_matches, além de drive_path.
+SCHEMA_VERSION = 5          # 5 = referência documental do consentimento facial.
 DBError = (sqlite3.Error, dbdriver.DbUnavailable)
 
 
@@ -132,6 +133,7 @@ class Store:
             ("clips", "drive_path", "TEXT"),
             ("contents", "drive_path", "TEXT"),
             ("clips", "face_matches", "TEXT NOT NULL DEFAULT '[]'"),
+            ("face_profiles", "consent_evidence", "TEXT NOT NULL DEFAULT ''"),
         ):
             if col not in self._columns(tbl):
                 self.conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col} {ddl}")
