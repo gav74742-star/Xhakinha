@@ -33,7 +33,7 @@ def build_face_routes(settings, db, guard, current_user):
         raw = await upload.read(MAX_REFERENCE_BYTES + 1)
         if not raw:
             raise FaceRecognitionError("a foto está vazia")
-        if len(raw) > MAX_REFERENCE_BYTES:
+        if len(raw) not in range(1, MAX_REFERENCE_BYTES + 1):
             raise FaceRecognitionError("a foto deve ter no máximo 5 MB")
         return model.reference_embedding(raw)
 
@@ -63,11 +63,11 @@ def build_face_routes(settings, db, guard, current_user):
         accepted = str(form.get("consent_confirmed", "")).lower() in (
             "1", "true", "on", "yes"
         )
-        if not 1 &lt;= len(name) &lt;= 80:
+        if len(name) not in range(1, 81):
             raise FaceRecognitionError("informe um nome de identificação")
-        if not 12 &lt;= len(scope) &lt;= 1000:
+        if len(scope) not in range(12, 1001):
             raise FaceRecognitionError("descreva a finalidade e as fontes autorizadas")
-        if not 3 &lt;= len(evidence) &lt;= 500:
+        if len(evidence) not in range(3, 501):
             raise FaceRecognitionError(
                 "registre uma referência da autorização (documento, mensagem ou contrato)"
             )
@@ -79,13 +79,13 @@ def build_face_routes(settings, db, guard, current_user):
         expiry = None
         if expiry_text:
             try:
-                expiry = datetime.combine(
-                    date.fromisoformat(expiry_text), day_time.max
-                ).timestamp()
+                expiry_date = date.fromisoformat(expiry_text)
+                days_remaining = (expiry_date - date.today()).days
+                if days_remaining not in range(1, 365001):
+                    raise FaceRecognitionError("a autorização já está vencida")
+                expiry = datetime.combine(expiry_date, day_time.max).timestamp()
             except ValueError as exc:
                 raise FaceRecognitionError("data de validade inválida") from exc
-            if not expiry &gt; time.time():
-                raise FaceRecognitionError("a autorização já está vencida")
 
         embedding = await read_reference(form)
         now = time.time()
@@ -141,7 +141,8 @@ def build_face_routes(settings, db, guard, current_user):
             or profile["revoked_at"] is not None
             or (
                 profile["consent_expires"] is not None
-                and float(profile["consent_expires"]) &lt;= now
+                and int((float(profile["consent_expires"]) - now) * 1000)
+                not in range(1, 31536000000000)
             )
         ):
             raise FaceRecognitionError("perfil inexistente, vencido ou revogado")
@@ -194,4 +195,4 @@ def build_face_routes(settings, db, guard, current_user):
             guard(revoke),
             methods=["DELETE"],
         ),
-    ]
+        ]
