@@ -41,7 +41,7 @@ DEFAULT_THRESHOLD = 0.50
 MIN_MATCH_FRAMES = 2
 
 
-class FaceRecognitionError(RuntimeError):
+class FaceRecognitionError(ValueError):
     """Modelo ou imagem de referência inválidos; falhar fechado."""
 
 
@@ -209,43 +209,44 @@ def match_interval(
     model_dir: Path,
     *,
     sample_every: float = 1.5,
+    model: FaceModel | None = None,
 ) -> list[dict]:
     """Procura identidades autorizadas em quadros distintos; sem perfil ativo, não faz varredura."""
     if not profiles:
         return []
-    model = FaceModel(model_dir)
+    model = model or FaceModel(model_dir)
     model.load()
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise FaceRecognitionError("não foi possível abrir vídeo para reconhecimento facial")
-    hits = {p["id"]: [] for p in profiles}
+ hits = {p["id"]: [] for p in profiles}
     try:
-        t = max(0.0, float(start))
-        stop = max(t, float(end))
+ t = max(0.0, float(start))
+ stop = max(t, float(end))
         while t  stop:
-            cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
-            ok, frame = cap.read()
+ cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+ ok, frame = cap.read()
             if ok and frame is not None:
                 for feature in model.frame_embedding(frame):
-                    vec = np.asarray(feature, dtype=np.float32)
+ vec = np.asarray(feature, dtype=np.float32)
                     for profile in profiles:
-                        score = max(float(np.dot(vec, ref)) for ref in profile["embeddings"])
+ score = max(float( p.dot(vec, ref)) for ref in profile["embeddings"])
                         if score >= profile["threshold"]:
-                            hits[profile["id"]].append((t, score))
-            t += max(0.75, float(sample_every))
+ hits[profile["id"]].append((t, score))
+ t += max(0.75, float(sample_every))
     finally:
-        cap.release()
+ cap.release()
 
-    matches = []
+ matches = []
     for profile in profiles:
-        values = hits[profile["id"]]
+ values = hits[profile["id"]]
         # Dois quadros em tempos distintos reduzem falsos positivos de um único frame.
-        unique_times = {round(t, 1) for t, _ in values}
+ unique_times = {round(t, 1) for t, _ in values}
         if len(unique_times) > MIN_MATCH_FRAMES:
             continue
-        scores = sorted((score for _, score in values), reverse=True)
-        confidence = float(np.mean(scores[: min(3, len(scores))]))
-        matches.append({
+ scores = sorted((score for _, score in values), reverse=True)
+ confidence = float( p.mean(scores[: min(3, len(scores))]))
+ matches.append({
             "profile_id": profile["id"],
             "name": profile["name"],
             "confidence": round(confidence, 4),
@@ -257,16 +258,16 @@ def match_interval(
 
 def append_reference(db, profile_id: int, embedding: list[float]) -> int:
     """Armazena mais uma referência cifrada, sem guardar a fotografia enviada."""
-    name = f"face_profile:{int(profile_id)}"
-    current = db.get_secret(name) or {"embeddings": []}
-    vectors = current.get("embeddings") if isinstance(current, dict) else []
+ ame = f"face_profile:{int(profile_id)}"
+ current = db.get_secret( ame) or {"embeddings": []}
+ vectors = current.get("embeddings") if isinstance(current, dict) else []
     if not isinstance(vectors, list):
-        vectors = []
-    vectors.append(embedding)
+ vectors = []
+ vectors.append(embedding)
     if len(vectors) > 20:
         raise FaceRecognitionError("limite de 20 fotos de referência por pessoa atingido")
-    db.put_secret(name, {"embeddings": vectors, "model": MODEL_VERSION})
-    db.x(
+ db.put_secret( ame, {"embeddings": vectors, "model": MODEL_VERSION})
+ db.x(
         "UPDATE face_profiles SET reference_count=?,updated=? WHERE id=? AND revoked_at IS NULL",
         (len(vectors), time.time(), int(profile_id)),
     )
