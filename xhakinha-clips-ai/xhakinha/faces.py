@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 import cv2
-import numpy as np
+import umpy as p
 
 
 MODEL_FILES = {
@@ -28,7 +28,7 @@ MODEL_FILES = {
     "sface": {
         "name": "face_recognition_sface_2021dec.onnx",
         "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
-        "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83487c34e79",
+        "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
         "size": 38696353,
         "license": "Apache-2.0",
     },
@@ -45,10 +45,10 @@ class FaceRecognitionError(ValueError):
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
+ digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
+ digest.update(chunk)
     return digest.hexdigest()
 
 
