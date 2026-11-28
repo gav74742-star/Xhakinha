@@ -76,6 +76,12 @@ def test_forged_token_rejected(server, engine):
     assert requests.get(server + "/api/status", cookies={"xh_session": none_tok}).status_code == 401
 
 
+def test_deleted_user_session_rejected(server, admin, engine):
+    engine.db.x("DELETE FROM users WHERE username=?", ("admin",))
+    response = admin.get(server + "/api/status")
+    assert response.status_code == 401
+
+
 def test_mutations_need_csrf_header(server, admin):
     s = requests.Session(); s.cookies.update(admin.cookies)
     assert s.post(server + "/api/control", json={"action": "pause"}).status_code == 403

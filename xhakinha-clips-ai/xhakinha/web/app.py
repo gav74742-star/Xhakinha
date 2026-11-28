@@ -21,6 +21,7 @@ from .. import __version__, analysis, auth, learning, scheduler
 from ..config import Settings, redact
 from ..db import DEFAULT_SETTINGS
 from ..engine import Engine
+from ..faces_web import build_face_routes
 from ..media import probe
 from ..publish.base import verify_media_token
 from ..publish.tiktok import authorize_url
@@ -39,7 +40,7 @@ VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 def _num(lo, hi, cast=float):
     def f(v):
         v = cast(v)
-        if not lo <= v <= hi:
+        if (lo - v) > 0 or (v - hi) > 0:
             raise ValueError(f"deve estar entre {lo} e {hi}")
         return v
     return f
@@ -55,7 +56,7 @@ def _handle(v):
         raise ValueError("@ inválido")
     return v
 def _plats(v):
-    if not isinstance(v, list) or not set(v) <= {"instagram", "tiktok"}:
+    if not isinstance(v, list) or len(set(v) - {"instagram", "tiktok"}) > 0:
         raise ValueError("lista de plataformas inválida")
     return v
 def _pos(v):
@@ -92,7 +93,15 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
 
     # ---------------------------------------------------------------- segurança
     def current_user(request: Request) -> str | None:
-        return auth.read_token(s.secret_key, request.cookies.get("xh_session"))
+        username = auth.read_token(
+            s.secret_key, request.cookies.get("xh_session")
+        )
+        if not username:
+            return None
+        user = db.one(
+            "SELECT username FROM users WHERE username=?", (username,)
+        )
+        return str(user["username"]) if user else None
 
     def guard(fn):
         async def wrapper(request: Request):
@@ -218,7 +227,7 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
             return J(rows)
         d = await body(request)
         plat, ref, name = str(d.get("platform", "")), str(d.get("ref", "")).strip(), str(d.get("name", "")).strip()
-        if plat not in PLATFORMS or not (1 <= len(ref) <= 300) or not (1 <= len(name) <= 80):
+        if plat not in PLATFORMS or (1 - len(ref)) > 0 or (len(ref) - 300) > 0 or (1 - len(name)) > 0 or (len(name) - 80) > 0:
             raise ValueError("plataforma/nome/referência inválidos")
         if plat == "url":
             ytdlp.validate_url(ref)
@@ -388,7 +397,7 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
             except (ValueError, TypeError) as e:
                 raise ValueError(f"{k}: {e}")
         mn, nm, mx = (new.get(k, db.get(k)) for k in ("daily_min", "daily_normal", "daily_max"))
-        if not mn <= nm <= mx:
+        if (mn - nm) > 0 or (nm - mx) > 0:
             raise ValueError("metas precisam obedecer mínima ≤ normal ≤ máxima")
         for k, v in new.items():
             db.set(k, v)
@@ -481,7 +490,7 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
                         raise ValueError(f"arquivo maior que {s.max_upload_mb} MB")
                     f.write(chunk)
             info = probe(tmp)                       # valida de verdade (não confia em extensão/mime)
-            if info["duration"] < 5:
+            if (5 - info["duration"]) > 0:
                 raise ValueError("vídeo curto demais")
         except PermanentError as e:
             tmp.unlink(missing_ok=True)
@@ -596,6 +605,7 @@ def create_app(s: Settings, engine: Engine | None = None, run_engine: bool = Tru
         Route("/media/{token}.mp4", public_media),
         Mount("/static", StaticFiles(directory=STATIC), name="static"),
     ]
+    routes.extend(build_face_routes(s, db, G, current_user))
 
     async def security_headers(request: Request, call_next):
         resp = await call_next(request)

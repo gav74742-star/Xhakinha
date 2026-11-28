@@ -11,6 +11,7 @@ from pathlib import Path
 from . import analysis, captions, editor, learning, scheduler
 from .config import Settings
 from .db import Store
+from .faces import FaceModel, FaceRecognitionError, active_profiles, match_interval
 from .media import probe
 from .publish.instagram import InstagramPublisher
 from .publish.tiktok import TikTokPublisher
@@ -126,7 +127,7 @@ class Pipeline:
             raise NotReadyYet("ingestão pausada (armazenamento no limite)", retry_after=1800)
         conn = make_connector(src, self.s, self.db)
         page, found, pages = job["payload"].get("page"), 0, 0
-        while pages < 10:
+        while (10 - pages) > 0:
             infos, page = conn.list_archive(page, 50)
             pages += 1
             for i in infos:
@@ -169,8 +170,8 @@ class Pipeline:
             conn = make_connector(src, self.s, self.db)
             path = conn.download(c, self.st.download_path(cid))
             info = probe(path)
-            if info["duration"] < 5:
-                raise PermanentError("vídeo curto demais (<5s)")
+            if (5 - info["duration"]) > 0:
+                raise PermanentError("vídeo curto demais (menor que 5s)")
             fp = quick_fingerprint(path, info["duration"])
             dup = self.db.one("SELECT id FROM contents WHERE fingerprint=? AND id!=? AND status IN ('processed','analyzing','downloaded')", (fp, cid))
             if dup and not c["protected"]:
@@ -207,6 +208,32 @@ class Pipeline:
             cands = []
             for t0, t1 in analysis.iter_chunks(meta["duration"], cfg["chunk_min"] * 60, cfg["chunk_overlap_s"]):
                 cands += analysis.analyze_range(path, t0, t1, meta, cfg, used, weights, self.s.whisper_enabled, self.s.whisper_model, self.detector)
+            face_profiles = active_profiles(self.db, source_id=c["source_id"])
+            if face_profiles:
+                model_dir = Path(self.s.data_dir) / "models"
+                face_model = FaceModel(model_dir)
+                try:
+                    face_model.load()
+                    matched_candidates = []
+                    for cand in cands:
+                        matches = match_interval(
+                            path, cand.start, cand.end, face_profiles, model_dir,
+                            model=face_model,
+                        )
+                        if matches:
+                            cand.face_matches = matches
+                            matched_candidates.append(cand)
+                    cands = matched_candidates
+                    self.db.event(
+                        "info", "faces",
+                        f"Filtro facial: {len(cands)} candidatos correspondem a perfis ativos",
+                        content=cid, profiles=len(face_profiles),
+                    )
+                except FaceRecognitionError as exc:
+                    raise TransientError(
+                        f"reconhecimento facial indisponível: {exc}",
+                        retry_after=900,
+                    ) from exc
             cands.sort(key=lambda x: -x.score)
             chosen = analysis.select_best(cands, float(cfg["min_clip_score"]))
             if max_clips:
@@ -225,19 +252,21 @@ class Pipeline:
 
     def _render_candidate(self, c: dict, path: Path, meta: dict, cand, origin: str) -> int:
         s, e = round(cand.start, 1), round(cand.end, 1)
+        face_matches_json = json.dumps(getattr(cand, "face_matches", []), ensure_ascii=False)
         row = self.db.one("SELECT * FROM clips WHERE content_id=? AND start=? AND end=?", (c["id"], s, e))
         if row and row["status"] != "processing" and row["path"] and Path(row["path"]).is_file():
+            self.db.x("UPDATE clips SET face_matches=? WHERE id=?", (face_matches_json, row["id"]))
             return row["id"]                                    # idempotente (retentativa não duplica)
         now = time.time()
         if row:
             clip_id = row["id"]
         else:
-            clip_id = self.db.x("INSERT INTO clips(content_id,start,end,score,scores,category,status,transcript,origin,created,updated) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                                (c["id"], s, e, cand.score, json.dumps(cand.scores), cand.category, "processing", cand.transcript, origin, now, now))
+            clip_id = self.db.x("INSERT INTO clips(content_id,start,end,score,scores,category,status,transcript,origin,created,updated,face_matches) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (c["id"], s, e, cand.score, json.dumps(cand.scores), cand.category, "processing", cand.transcript, origin, now, now, face_matches_json))
         dest = self.st.clip_path(clip_id)
         info = editor.render_clip(path, dest, s, e - s, meta, self.detector)
-        self.db.x("UPDATE clips SET status='awaiting', path=?, sha256=?, size=?, duration=?, updated=? WHERE id=?",
-                  (str(dest), sha256_file(dest), info["size"], info["duration"], time.time(), clip_id))
+        self.db.x("UPDATE clips SET status='awaiting', path=?, sha256=?, size=?, duration=?, face_matches=?, updated=? WHERE id=?",
+                  (str(dest), sha256_file(dest), info["size"], info["duration"], face_matches_json, time.time(), clip_id))
         self.db.x("INSERT INTO segments_used(content_id,fingerprint,start,end) VALUES(?,?,?,?)", (c["id"], c["fingerprint"], s, e))
         self.db.x("UPDATE contents SET clips_made=clips_made+1 WHERE id=?", (c["id"],))
         return clip_id
@@ -263,6 +292,7 @@ class Pipeline:
         self.db.x("UPDATE publications SET file_path=?, updated=? WHERE id=?", (str(dest), time.time(), pub["id"]))
         pub["file_path"] = str(dest)
         return dest
+
 
     def h_publish(self, job: dict):
         pid = job["payload"]["pub_id"]

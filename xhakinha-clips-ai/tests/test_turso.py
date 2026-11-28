@@ -45,7 +45,7 @@ def test_init_idempotent_and_versioned(tmp_path, monkeypatch):
     a.set("x", 1)
     monkeypatch.delenv("XH_TURSO_INIT")
     b = Store(s)                                   # segunda abertura: sem flag, esquema já existe
-    assert b.get("x") == 1 and b.get("schema_version") == 3
+    assert b.get("x") == 1 and b.get("schema_version") == 6
 
 
 def test_config_rules(tmp_path):
