@@ -152,3 +152,70 @@ def test_b2_rejects_unsafe_keys():
     for key in invalid_keys:
         with pytest.raises(PermissionError):
             B2Backend._key(key)
+
+
+def test_b2_client_desativa_checksum_crc32_padrao_do_boto3(monkeypatch):
+    """boto3 >= 1.36 envia CRC32 por padrão e o B2 recusa; o backend deve pedir 'when_required'."""
+    import sys
+    import types
+
+    seen = {}
+
+    class FakeConfig:
+        def __init__(self, **kw):
+            seen.update(kw)
+
+    boto3_m = types.ModuleType("boto3")
+    boto3_m.client = lambda *a, **kw: object()
+    botocore_m = types.ModuleType("botocore")
+    cfg_m = types.ModuleType("botocore.config")
+    cfg_m.Config = FakeConfig
+    monkeypatch.setitem(sys.modules, "boto3", boto3_m)
+    monkeypatch.setitem(sys.modules, "botocore", botocore_m)
+    monkeypatch.setitem(sys.modules, "botocore.config", cfg_m)
+    B2Backend("https://s3.us-east-005.backblazeb2.com", "us-east-005", "k", "s", "bucket", max_gb=1)
+    assert seen["request_checksum_calculation"] == "when_required"
+    assert seen["response_checksum_validation"] == "when_required"
+
+
+def test_b2_client_aceita_botocore_antigo_sem_as_opcoes(monkeypatch):
+    import sys
+    import types
+
+    class OldConfig:
+        def __init__(self, signature_version=None, retries=None):
+            self.ok = True
+
+    boto3_m = types.ModuleType("boto3")
+    boto3_m.client = lambda *a, **kw: object()
+    cfg_m = types.ModuleType("botocore.config")
+    cfg_m.Config = OldConfig
+    monkeypatch.setitem(sys.modules, "boto3", boto3_m)
+    monkeypatch.setitem(sys.modules, "botocore", types.ModuleType("botocore"))
+    monkeypatch.setitem(sys.modules, "botocore.config", cfg_m)
+    B2Backend("https://s3.us-east-005.backblazeb2.com", "us-east-005", "k", "s", "bucket", max_gb=1)
+
+
+def test_b2_check_script_passa_contra_s3_simulado(monkeypatch):
+    import importlib.util
+    import sys
+    import types
+
+    class FakeTransferConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    for name in ("boto3", "boto3.s3", "boto3.s3.transfer"):
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    sys.modules["boto3.s3.transfer"].TransferConfig = FakeTransferConfig
+    spec = importlib.util.spec_from_file_location("b2_check", Path(__file__).resolve().parents[1] / "scripts" / "b2_check.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fake = FakeB2()
+    backend = B2Backend("https://s3.us-east-005.backblazeb2.com", "us-east-005", "k", "s", "bucket", max_gb=1, client=fake)
+    backend.multipart_threshold = 1_000_000          # evita criar 64 MB no teste
+    lines = []
+    assert mod.run(backend, out=lines.append) is True
+    assert lines[-1] == "RESULTADO: PASSOU"
+    assert fake.objects == {}                        # limpou tudo
+    assert fake.multipart_uploads                    # exercitou o caminho multipart

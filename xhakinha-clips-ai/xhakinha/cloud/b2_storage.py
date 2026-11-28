@@ -43,16 +43,30 @@ class B2Backend(DriveBackend):
             except ImportError as exc:
                 raise RuntimeError("boto3 não instalado; atualize requirements") from exc
 
+            # boto3 >= 1.36 envia checksums CRC32 por padrão ("when_supported"); o B2 rejeita isso em uploads
+            # (ex.: "Checksum Type mismatch"). "when_required" restaura o comportamento compatível com o B2.
+            os.environ.setdefault("AWS_REQUEST_CHECKSUM_CALCULATION", "when_required")
+            os.environ.setdefault("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required")
+            cfg = dict(
+                signature_version="s3v4",
+                retries={"max_attempts": 4, "mode": "standard"},
+                request_checksum_calculation="when_required",
+                response_checksum_validation="when_required",
+            )
+            try:
+                config = Config(**cfg)
+            except TypeError:                      # botocore antigo (< 1.36): opções não existem e o problema também não
+                cfg.pop("request_checksum_calculation")
+                cfg.pop("response_checksum_validation")
+                config = Config(**cfg)
+
             client = boto3.client(
                 "s3",
                 endpoint_url=endpoint_url.rstrip("/"),
                 region_name=region,
                 aws_access_key_id=key_id,
                 aws_secret_access_key=application_key,
-                config=Config(
-                    signature_version="s3v4",
-                    retries={"max_attempts": 4, "mode": "standard"},
-                ),
+                config=config,
             )
 
         self.client = client
